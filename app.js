@@ -14,7 +14,7 @@
     id: store.get("id"), secret: store.get("secret"), me: null,
     day: todayDay(), tab: "rank",
     board: null, hints: [], teams: { "11/3": [], "11/4": [] }, recent: [],
-    members: [], hist: [], settings: null,
+    members: [], hist: [], settings: null, people: [], deleted: [], clog: [], q: "",
     pending: null, pushOn: false, logoTaps: 0, showKey: false, tick: 0,
   };
 
@@ -30,7 +30,8 @@
     not_registered: "登録が見つかりません。もう一度名前を入れてください。",
     not_counter: "いまはカウント係ではありません。",
     not_master: "マスター専用の操作です。",
-    no_team: "チームが見つかりません。",
+    no_team: "その人はこの日のチームに入っていません。",
+    nothing_to_minus: "取り消せるカウントがありません。",
   };
   function status(msg) { const el = $("status"); el.textContent = msg || ""; el.hidden = !msg; }
 
@@ -98,8 +99,8 @@
   }
 
   $("reg-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const name = $("reg-name").value.trim(); if (!name) return;
+    ev.preventDefault(); if (document.activeElement) document.activeElement.blur(); composing = false;
+    const name = $("reg-name").value.trim().slice(0, 20); if (!name) return;
     const bytes = crypto.getRandomValues(new Uint8Array(24));
     const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
@@ -136,7 +137,12 @@
       S.board = board; S.teams[S.day] = teams;
       const myDay = S.me && S.me.team_day === S.day;
       S.hints = board.hidden && myDay ? await api("get_hints", { ...auth(), p_day: S.day }) : [];
-      if (S.me && (S.me.is_counter || S.me.is_master)) S.recent = await api("history", { ...auth(), p_day: S.day, p_limit: 10 });
+      if (canCount()) {
+        [S.recent, S.people] = await Promise.all([
+          api("history", { ...auth(), p_day: S.day, p_limit: 10 }),
+          api("members_for_count", { ...auth(), p_day: S.day }),
+        ]);
+      }
       if (S.me && S.me.is_master && S.tab === "master") await loadMaster();
       status("");
     } catch (e) { fail(e); }
@@ -144,13 +150,16 @@
   }
 
   async function loadMaster() {
-    const [members, hist, settings] = await Promise.all([
+    const [members, hist, settings, deleted, clog] = await Promise.all([
       api("list_members", auth()),
       api("history", { ...auth(), p_day: S.day, p_limit: 5000 }),
       api("get_settings", auth()),
+      api("list_deleted_teams", { ...auth(), p_day: S.day }),
+      api("list_counter_log", auth()),
     ]);
-    S.members = members; S.hist = hist; S.settings = settings;
+    S.members = members; S.hist = hist; S.settings = settings; S.deleted = deleted; S.clog = clog;
   }
+  const canCount = () => !!(S.me && (S.me.is_counter || S.me.is_master));
 
   // ---------- 通知 ----------
   function b64ToBytes(b64) {
@@ -180,14 +189,24 @@
   }
 
   // ---------- 操作 ----------
-  async function addCount(teamId) {
+  const personName = (id) => { const p = S.people.find((x) => x.id === id); return p ? p.name : ""; };
+  function bump(id, d) { const p = S.people.find((x) => x.id === id); if (p) { p.n = Math.max(0, p.n + d); renderAll(); } }
+  async function addCount(memberId) {
+    bump(memberId, 1);
     try {
-      const id = await api("add_count", { ...auth(), p_team: teamId });
-      const t = S.teams[S.day].find((x) => x.id === teamId);
-      toast((t ? t.name : "") + " +1", id);
+      const id = await api("add_count", { ...auth(), p_member: memberId });
+      toast(personName(memberId) + " +1", id);
       notify({ type: "count", count_id: id });
       refresh();
-    } catch (e) { fail(e); loadMe().then(renderAll); }
+    } catch (e) { bump(memberId, -1); fail(e); loadMe().then(renderAll); }
+  }
+  async function minusCount(memberId) {
+    bump(memberId, -1);
+    try {
+      await api("minus_count", { ...auth(), p_member: memberId, p_day: S.day });
+      toast(personName(memberId) + " -1");
+      refresh();
+    } catch (e) { bump(memberId, 1); fail(e); }
   }
   async function undoCount(id) {
     try { await api("undo_count", { ...auth(), p_count: Number(id) }); toast("取り消しました"); refresh(); } catch (e) { fail(e); }
@@ -202,25 +221,32 @@
   // ---------- 画面 ----------
   function renderNav() {
     const tabs = [["rank", "ランキング"]];
-    if (S.me && (S.me.is_counter || S.me.is_master)) tabs.push(["count", "カウント"]);
-    tabs.push(["me", "マイページ"]);
+    if (canCount()) tabs.push(["count", "カウント"]);
+    tabs.push(["rules", "ルール"], ["me", "マイ"]);
     if (S.me && S.me.is_master) tabs.push(["master", "マスター"]);
     if (!tabs.some(([k]) => k === S.tab)) S.tab = "rank";
     $("nav").innerHTML = tabs.map(([k, l]) => `<button data-tab="${k}" aria-pressed="${k === S.tab}">${l}</button>`).join("");
   }
 
-  const editing = (el) => el.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
+  // 入力中（日本語の変換中を含む）は画面を書き換えない。終わったらまとめて描き直す
+  let composing = false, renderPending = false;
+  const typing = () => composing || /INPUT|SELECT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
+  document.addEventListener("compositionstart", () => { composing = true; });
+  document.addEventListener("compositionend", () => { composing = false; });
+  document.addEventListener("focusout", () => setTimeout(() => { if (renderPending && !typing()) renderAll(); }, 150));
 
   function renderAll() {
+    if (typing()) { renderPending = true; return; }
+    renderPending = false;
     document.querySelectorAll("[data-day]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.day === S.day)));
     renderNav();
-    ["rank", "count", "me", "master"].forEach((v) => { $("v-" + v).hidden = S.tab !== v; });
-    const views = { rank: renderRank, count: renderCount, me: renderMe, master: renderMaster };
+    ["rank", "count", "rules", "me", "master"].forEach((v) => { $("v-" + v).hidden = S.tab !== v; });
+    const views = { rank: renderRank, count: renderCount, rules: renderRules, me: renderMe, master: renderMaster };
     for (const [k, fn] of Object.entries(views)) {
       const el = $("v-" + k);
-      if (k === S.tab && editing(el)) continue; // 入力中は書き換えない
       el.innerHTML = S.me ? fn() : "";
       el.style.cssText = "display:grid;gap:12px";
+      if (k === "count") applyFilter();
       if (S.tab !== k) el.hidden = true;
     }
   }
@@ -280,27 +306,50 @@
 
   function counterBar() {
     const me = S.me;
-    return `<div class="bar"><span>カウント係：<b>${esc(me.is_counter ? "あなた" : (me.counter_name || "未設定"))}</b></span>${me.is_counter ? '<span class="tagme">押せます</span>' : ""}</div>`;
+    const who = me.is_counter ? "あなた" : (me.counter_name || "未設定");
+    const tag = me.is_counter ? '<span class="tagme">押せます</span>' : me.is_master ? '<span class="tagme">マスター権限で押せます</span>' : "";
+    return `<div class="bar"><span>カウント係：<b>${esc(who)}</b></span>${tag}</div>`;
   }
 
   function renderCount() {
-    const me = S.me;
     let h = counterBar();
-    const teams = S.teams[S.day];
-    const score = (id) => { const t = S.board && S.board.teams.find((x) => x.id === id); return t && t.score != null ? t.score : ""; };
-    if (me.is_counter) {
-      h += `<p class="small">呼んできた人から申告を受けたら、そのチームの「+1」。間違えたら下で取り消し。</p>`;
-      h += teams.length ? teams.map((t) => `<button class="plus" data-act="plus" data-id="${esc(t.id)}"><span class="n">${esc(t.name)}</span><span class="c">${score(t.id)}</span><span class="p">+1</span></button>`).join("")
-        : empty(S.day + "のチームはまだありません");
-    } else {
-      h += `<p class="small">カウント係は${esc(me.counter_name || "未設定")}です。交代は「マスター」タブから。</p>`;
+    h += `<p class="small">申告してきた人を探して「+1」。押し間違えは「-1」で戻せます。</p>`;
+    if (!S.people.length) return h + empty(S.day + "にチームがある人がいません", "みんながチームを選ぶとここに並びます");
+    h += `<input id="q" type="search" placeholder="名前で探す" value="${esc(S.q)}" autocomplete="off">`;
+    let cur = null;
+    for (const p of S.people) {
+      if (p.team_id !== cur) { if (cur) h += `</div>`; cur = p.team_id; h += `<div class="grp"><h3>${esc(p.team_name)}</h3>`; }
+      h += `<div class="person" data-name="${esc(p.name)}"><span class="n">${esc(p.name)}</span><span class="c">${p.n}</span>
+        <button class="mbtn" data-act="minus" data-id="${esc(p.id)}" aria-label="${esc(p.name)} -1">-1</button>
+        <button class="pbtn" data-act="plus" data-id="${esc(p.id)}" aria-label="${esc(p.name)} +1">+1</button></div>`;
     }
+    h += `</div>`;
     const recent = S.recent.filter((c) => !c.deleted);
     if (recent.length) {
       h += `<div class="box"><h2 class="h">さっきのカウント</h2><ul class="list">${recent.map((c) =>
-        `<li><time>${hhmm(c.at)}</time><span class="what">${esc(c.team_name)} +1</span><button class="btn" data-act="undo" data-id="${c.id}">取り消し</button></li>`).join("")}</ul></div>`;
+        `<li><time>${hhmm(c.at)}</time><span class="what">${esc(c.to_name || "?")}（${esc(c.team_name)}）+1</span><button class="btn" data-act="undo" data-id="${c.id}">取り消し</button></li>`).join("")}</ul></div>`;
     }
     return h;
+  }
+  function applyFilter() {
+    const q = S.q.trim();
+    document.querySelectorAll("#v-count .person").forEach((el) => { el.hidden = !!q && !el.dataset.name.includes(q); });
+    document.querySelectorAll("#v-count .grp").forEach((g) => { g.hidden = ![...g.querySelectorAll(".person")].some((el) => !el.hidden); });
+  }
+
+  function renderRules() {
+    const rule = (t, s) => `<li><b>${t}</b>${s ? `<span>${s}</span>` : ""}</li>`;
+    return `<div class="box rules"><h2 class="h">禁止事項</h2><ol>
+        ${rule("すでに並んでいる人を呼び込みに数えない", "列に並んでいる人に声をかけて、自分の申告にするのはNG")}
+        ${rule("強引に連れてこない", "腕を引く・しつこく付きまとうなど、相手が嫌がる呼び込みはNG")}
+        ${rule("虚偽の申告をしない", "呼んでいない人の申告や水増しはNG")}
+      </ol><p class="small">違反がわかったら、そのカウントは取り消します。</p></div>
+      <div class="box rules"><h2 class="h">しくみ</h2><ul>
+        <li>お客さんを連れてきたら、カウント係に名前を申告 → 係が+1</li>
+        <li>ランキングはチーム単位。個人の数は出ません</li>
+        <li>12:30から順位は非公開。30分ごとに自分のチームにだけヒントが届きます</li>
+        <li>最後に結果発表！ 1〜3位に景品あり</li>
+      </ul></div>`;
   }
 
   function renderMe() {
@@ -312,7 +361,7 @@
     else if (S.pushOn) h += `<div class="box"><h2 class="h">通知：ON</h2><p class="small">止めたいときは、設定アプリの通知からweringをOFFに。</p></div>`;
     else h += `<div class="box"><h2 class="h">通知：OFF</h2><button class="go" data-act="push">通知をONにする</button></div>`;
     if (S.showKey && !me.is_master) {
-      h += `<form class="box" data-form="key" autocomplete="off"><h2 class="h">マスター合言葉</h2><input id="key-input" type="password"><button class="go" type="submit">送る</button></form>`;
+      h += `<form class="box" data-form="key" autocomplete="off"><h2 class="h">マスター合言葉</h2><input id="key-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button class="go" type="submit">送る</button></form>`;
     }
     return h;
   }
@@ -323,9 +372,17 @@
     let h = counterBar();
 
     // チーム
+    const nIn = (tid) => S.members.filter((m) => m.team_id === tid).length;
     h += `<div class="box"><h2 class="h">${esc(day)}のチーム（${teams.length}）</h2><ul class="list">${teams.map((t) =>
-      `<li><input id="rn-${esc(t.id)}" value="${esc(t.name)}" maxlength="20" style="flex:1;min-width:0"><button class="btn" data-act="rename" data-id="${esc(t.id)}">保存</button></li>`).join("") || '<li class="small">まだありません</li>'}</ul>
-      <form data-form="team" class="row" autocomplete="off"><input id="team-new" maxlength="20" placeholder="例：とらチーム"><button class="btn blue" type="submit">追加</button></form></div>`;
+      S.pending === "d:" + t.id
+        ? `<li class="confirm"><span class="what">「${esc(t.name)}」を削除しますか？<br><span class="small">メンバー${nIn(t.id)}人は未所属になり、カウントはランキングから外れます。下の「削除したチーム」からいつでも元に戻せます。</span></span><button class="btn red" data-act="del-yes" data-id="${esc(t.id)}">削除する</button><button class="btn" data-act="cancel">やめる</button></li>`
+        : `<li><input id="rn-${esc(t.id)}" value="${esc(t.name)}" style="flex:1;min-width:0"><button class="btn" data-act="rename" data-id="${esc(t.id)}">保存</button><button class="btn" data-act="del" data-id="${esc(t.id)}">削除</button></li>`).join("") || '<li class="small">まだありません</li>'}</ul>
+      <form data-form="team" class="row" autocomplete="off"><input id="team-new" placeholder="例：とらチーム"><button class="btn blue" type="submit">追加</button></form></div>`;
+
+    if (S.deleted.length) {
+      h += `<div class="box"><h2 class="h">削除したチーム</h2><ul class="list">${S.deleted.map((t) =>
+        `<li><span class="what del">${esc(t.name)}</span><span class="small">${hhmm(t.deleted_at)}削除・${t.members}人・${t.counts}カウント</span><button class="btn blue" data-act="restore" data-id="${esc(t.id)}">元に戻す</button></li>`).join("")}</ul></div>`;
+    }
 
     // メンバー
     const opts = (m) => {
@@ -350,18 +407,24 @@
 
     // 履歴
     h += `<div class="box"><h2 class="h">履歴（${S.hist.length}件）</h2><ul class="list" style="max-height:340px;overflow:auto">${S.hist.map((c) =>
-      `<li><time>${hhmm(c.at)}</time><span class="what${c.deleted ? " del" : ""}">${esc(c.team_name)} +1 <span class="small">（${esc(c.by_name || "?")}）</span></span>${c.deleted ? "" : `<button class="btn" data-act="undo" data-id="${c.id}">取消</button>`}</li>`).join("") || '<li class="small">まだありません</li>'}</ul></div>`;
+      `<li><time>${hhmm(c.at)}</time><span class="what${c.deleted ? " del" : ""}">${esc(c.to_name || "?")}（${esc(c.team_name)}）+1 <span class="small">係：${esc(c.by_name || "?")}</span></span>${c.deleted ? "" : `<button class="btn" data-act="undo" data-id="${c.id}">取消</button>`}</li>`).join("") || '<li class="small">まだありません</li>'}</ul></div>`;
+
+    // カウント係の履歴
+    h += `<div class="box"><h2 class="h">カウント係の履歴</h2><ul class="list" style="max-height:240px;overflow:auto">${S.clog.map((l) =>
+      `<li><time>${hhmm(l.at)}</time><span class="what">${esc(l.name || "?")} が係に <span class="small">（指名：${esc(l.by_name || "?")}）</span></span></li>`).join("") || '<li class="small">まだありません</li>'}</ul></div>`;
 
     // 景品
     const pz = st.prizes || ["", "", ""];
     h += `<form class="box" data-form="prizes" autocomplete="off"><h2 class="h">景品</h2>${[0, 1, 2].map((i) =>
-      `<label>${i + 1}位<input id="pz-${i}" maxlength="30" value="${esc(pz[i] || "")}" placeholder="${["例：ギフトカード1,000円", "例：カップ麺", "例：ジュース"][i]}"></label>`).join("")}<button class="go" type="submit">保存</button></form>`;
+      `<label>${i + 1}位<input id="pz-${i}" value="${esc(pz[i] || "")}" placeholder="${["例：ギフトカード1,000円", "例：カップ麺", "例：ジュース"][i]}"></label>`).join("")}<button class="go" type="submit">保存</button></form>`;
 
     // 結果発表
     const rev = (st.revealed || []).includes(day);
     h += `<div class="box"><h2 class="h">${esc(day)}の結果発表</h2>${rev
       ? `<p class="small">公開中です。</p><button class="btn" data-act="reveal-off">非公開に戻す</button>`
-      : S.pending === "reveal" ? `<button class="go red" data-act="reveal-yes">本当に全員に公開する</button><button class="btn" data-act="cancel">やめる</button>`
+      : S.pending === "reveal" ? `<div class="confirm"><p class="small">この順位を全員に公開します。みんなの画面に結果が出ます。</p>${
+          (S.board && S.board.teams || []).slice(0, 3).map((t) => `<div class="row"><b>${t.rank}位</b><span style="flex:1">${esc(t.name)}</span><b>${t.score}人</b></div>`).join("") || '<p class="small">チームがありません</p>'
+        }<button class="go red" data-act="reveal-yes">公開する</button><button class="btn" data-act="cancel">やめる</button></div>`
       : `<button class="go red" data-act="reveal">結果発表する（全員に順位を公開）</button>`}</div>`;
 
     // リハーサル
@@ -382,10 +445,14 @@
     const id = b.dataset.id;
     switch (b.dataset.act) {
       case "plus": addCount(id); break;
+      case "minus": minusCount(id); break;
+      case "del": S.pending = "d:" + id; renderAll(); break;
+      case "del-yes": masterDo("delete_team", { p_team: id }, "削除しました（元に戻せます）"); break;
+      case "restore": masterDo("restore_team", { p_team: id }, "元に戻しました"); break;
       case "undo": undoCount(id); break;
       case "pick": pickTeam(id); break;
       case "push": enablePush(); break;
-      case "rename": { const v = $("rn-" + id).value.trim(); if (v) masterDo("rename_team", { p_team: id, p_name: v }, "名前を変えました"); break; }
+      case "rename": { const v = $("rn-" + id).value.trim().slice(0, 20); if (v) masterDo("rename_team", { p_team: id, p_name: v }, "名前を変えました"); break; }
       case "counter": S.pending = "c:" + id; renderAll(); break;
       case "counter-yes": masterDo("set_counter", { p_member: id }, "カウント係を指名しました").then(() => notify({ type: "counter" })); break;
       case "cancel": S.pending = null; renderAll(); break;
@@ -396,6 +463,9 @@
       case "test-off": masterDo("set_test", { p_force: false, p_slot_minutes: 30 }, "本番設定に戻しました"); break;
     }
   });
+  document.addEventListener("input", (e) => {
+    if (e.target.id === "q") { S.q = e.target.value; applyFilter(); }
+  });
   document.addEventListener("change", (e) => {
     const s = e.target.closest('select[data-act="move"]');
     if (s && s.value) masterDo("move_member", { p_member: s.dataset.id, p_team: s.value }, "移動しました");
@@ -403,13 +473,13 @@
   });
   document.addEventListener("submit", async (e) => {
     const f = e.target.closest("[data-form]"); if (!f) return;
-    e.preventDefault();
+    e.preventDefault(); if (document.activeElement) document.activeElement.blur(); composing = false;
     if (f.dataset.form === "team") {
-      const v = $("team-new").value.trim(); if (!v) return;
+      const v = $("team-new").value.trim().slice(0, 20); if (!v) return;
       $("team-new").blur(); await masterDo("add_team", { p_day: S.day, p_name: v }, v + " を追加しました");
     } else if (f.dataset.form === "prizes") {
       document.activeElement.blur();
-      await masterDo("set_prizes", { p_prizes: [0, 1, 2].map((i) => $("pz-" + i).value.trim()) }, "景品を保存しました");
+      await masterDo("set_prizes", { p_prizes: [0, 1, 2].map((i) => $("pz-" + i).value.trim().slice(0, 30)) }, "景品を保存しました");
     } else if (f.dataset.form === "key") {
       try {
         const ok = await api("claim_master", { ...auth(), p_key: $("key-input").value });

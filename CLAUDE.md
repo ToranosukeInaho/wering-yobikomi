@@ -13,6 +13,10 @@
 - マスター：`config.master_key_hash` と一致する合言葉で `claim_master`。マスター専用関数は `_master()` を通す
 - カウント係：`config.counter_id` の1人だけが `add_count` できる（二重カウント防止）
 - 12:30以降の非公開はサーバー側（`get_board` が score/rank を null で返す）。フロントで隠しているわけではない
+- カウントは「呼んできた人（credited_to）」に付く。チームはその人の押した時点のチーム。-1 は `minus_count` でその人のその日の最新1件を論理削除
+- カウント係（`config.counter_id`）とマスターだけが押せる（`_is_counter`）。指名の履歴は `counter_log`
+- チーム削除は論理削除（`teams.deleted_at`）。`restore_team` で戻せる。削除中のチームは全集計から除外
+- 既存DBの更新は `supabase/migration_v2.sql` のように、alter ＋ 関数の再定義だけのファイルを作って流す（schema.sql を丸ごと流すと合言葉が上書きされる）
 - `_` で始まる関数は内部用。anonにgrantしない。Edge Function（service_role）からは呼べる
 
 ## 時刻

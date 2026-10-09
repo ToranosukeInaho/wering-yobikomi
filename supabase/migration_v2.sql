@@ -1,85 +1,21 @@
 -- ============================================================
--- wering 呼び込みランキング戦  (IVY Festa 2026)
--- Supabase の SQL Editor にこのファイルを丸ごと貼って Run。
--- 最後の「マスター合言葉」だけ自分用に書き換えてから実行すること。
--- 見る側はログインなし。全部の読み書きは下の関数(RPC)経由で、
--- テーブルは anon から直接触れない（RLSオン・ポリシーなし）。
+-- v2 への更新（すでに schema.sql を流したプロジェクト用）
+-- SQL Editor に丸ごと貼って Run。合言葉・チーム・メンバーはそのまま残る。
 -- ============================================================
-create extension if not exists pgcrypto with schema extensions;
-
--- ---------- テーブル ----------
-create table if not exists config (
-  id               int primary key default 1 check (id = 1),
-  master_key_hash  text,
-  counter_id       uuid,
-  hide_time        time not null default '12:30',
-  force_at         timestamptz,              -- リハーサル用：この時刻から隠す（null=本番の時刻）
-  slot_minutes     int  not null default 30, -- ヒントの間隔（リハーサルは1〜5分にすると早い）
-  revealed         text[] not null default '{}',
-  prizes           text[] not null default array['', '', '']
-);
-
-create table if not exists teams (
-  id         uuid primary key default gen_random_uuid(),
-  day        text not null check (day in ('11/3', '11/4')),
-  name       text not null check (char_length(name) between 1 and 20),
-  created_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
-create table if not exists members (
-  id          uuid primary key default gen_random_uuid(),
-  name        text not null check (char_length(name) between 1 and 20),
-  secret_hash text not null,
-  team_id     uuid references teams(id) on delete set null,
-  is_master   boolean not null default false,
-  created_at  timestamptz not null default now()
-);
-
-create table if not exists counts (
-  id         bigint generated always as identity primary key,
-  team_id    uuid not null references teams(id) on delete cascade,
-  day        text not null,
-  counted_by uuid references members(id) on delete set null,   -- 押したカウント係
-  credited_to uuid references members(id) on delete set null,  -- 呼んできた人
-  created_at timestamptz not null default now(),
-  deleted_at timestamptz,
-  notified   boolean not null default false
-);
-create index if not exists counts_day_idx on counts(day, created_at);
-
-create table if not exists push_subs (
-  endpoint   text primary key,
-  member_id  uuid not null references members(id) on delete cascade,
-  p256dh     text not null,
-  auth       text not null,
-  created_at timestamptz not null default now()
-);
-
+alter table teams  add column if not exists deleted_at timestamptz;
+alter table counts add column if not exists credited_to uuid references members(id) on delete set null;
 create table if not exists counter_log (
   id         bigint generated always as identity primary key,
   member_id  uuid references members(id) on delete set null,
   set_by     uuid references members(id) on delete set null,
   created_at timestamptz not null default now()
 );
-
-create table if not exists hint_sent (
-  day  text not null,
-  slot int  not null,
-  sent_at timestamptz not null default now(),
-  primary key (day, slot)
-);
-
-alter table config    enable row level security;
-alter table teams     enable row level security;
-alter table members   enable row level security;
-alter table counts    enable row level security;
-alter table push_subs enable row level security;
-alter table hint_sent enable row level security;
 alter table counter_log enable row level security;
-revoke all on config, teams, members, counts, push_subs, hint_sent, counter_log from anon, authenticated;
-
-insert into config (id) values (1) on conflict (id) do nothing;
+revoke all on counter_log from anon, authenticated;
+-- 今のカウント係を履歴の1件目として入れておく
+insert into counter_log(member_id, set_by)
+select counter_id, counter_id from config where id = 1 and counter_id is not null
+  and not exists (select 1 from counter_log);
 
 -- ---------- 内部ヘルパー ----------
 create or replace function _day_date(p_day text) returns date
@@ -612,8 +548,3 @@ to anon, authenticated;
 grant execute on all functions in schema public to service_role;
 grant all on all tables in schema public to service_role;
 
--- ============================================================
--- ★ マスター合言葉（自分だけが知っている文字列に変えてから Run）
---   アプリのマイページでロゴを5回タップ → この合言葉を入れるとマスターになる
--- ============================================================
-update config set master_key_hash = encode(extensions.digest('ここを自分だけの合言葉に変える', 'sha256'), 'hex') where id = 1;
