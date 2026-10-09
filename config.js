@@ -4,5 +4,5 @@
 window.WERING = {
   SUPABASE_URL: "https://xxxx.supabase.co",
   SUPABASE_KEY: "ここにanonキー",
-  VAPID_PUBLIC_KEY: "ここにVAPID公開鍵",
+  VAPID_PUBLIC_KEY: "BMxkS48aIcMIn2iaX942zzOd5XfZToh3LovjVKU9giX4lkaVwMKSWiMjaWP8-i2t7fXFgKmJ6fhZqGTBK9yMBPU",
 };
