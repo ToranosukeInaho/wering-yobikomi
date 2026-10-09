@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>wering 呼び込みランキング戦</title>
+<meta name="theme-color" content="#ffd23f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="wering">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Dela+Gothic+One&family=Jua&family=Noto+Sans+JP:wght@700;900&display=swap">
+<style>
+[hidden]{display:none!important}
+:root{
+  --y:#ffd23f; --y2:#f5bf1a; --blue:#1d3fbf; --red:#e8412c; --ink:#111; --paper:#fff; --cream:#fff7d1; --muted:#555;
+  --disp:"Dela Gothic One","Noto Sans JP",sans-serif;
+  --num:"Black Han Sans","Dela Gothic One",sans-serif;
+  --body:"Noto Sans JP","Hiragino Sans",system-ui,sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--y);color:var(--ink)}
+body{font-family:var(--body);font-weight:900;min-height:100vh;-webkit-tap-highlight-color:transparent;
+  background:var(--y) radial-gradient(var(--y2) 2px,transparent 2.5px) 0 0/18px 18px;
+  padding:env(safe-area-inset-top,0px) 16px calc(84px + env(safe-area-inset-bottom,0px))}
+.wrap{max-width:560px;margin:0 auto}
+button{font:inherit;cursor:pointer;color:inherit}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+
+.logo{text-align:center;padding:22px 0 0;user-select:none;-webkit-user-select:none}
+.sign{display:inline-block;background:var(--paper);border:5px solid var(--blue);border-radius:14px;padding:10px 26px 12px;position:relative}
+.sign .k{font:22px Jua,sans-serif;color:var(--red);letter-spacing:2px}
+.sign .w{font:62px/0.9 Jua,sans-serif;color:var(--blue)}
+.sign .e{font:15px var(--num);color:#fff;background:var(--red);border-radius:99px;padding:3px 12px;display:inline-block;letter-spacing:2px}
+.sign svg{position:absolute;right:-26px;top:-30px;transform:rotate(18deg)}
+.ribbon{margin:-10px auto 0;width:max-content;max-width:100%;font:19px var(--disp);background:var(--blue);color:var(--y);padding:6px 14px;border:3px solid #fff;transform:rotate(-2deg);position:relative}
+
+.days{display:flex;margin:18px 0 0;border:3px solid var(--ink);background:var(--paper)}
+.days button{flex:1;border:0;background:transparent;padding:9px 4px;font:17px var(--disp)}
+.days button[aria-pressed="true"]{background:var(--red);color:#fff}
+
+main,.screen{display:grid;gap:12px;padding-top:14px}
+.status{margin:0;background:var(--red);color:#fff;padding:8px 12px;border:3px solid var(--ink);font-size:14px}
+.box{background:var(--paper);border:3px solid var(--ink);box-shadow:5px 5px 0 var(--ink);padding:12px 14px;display:grid;gap:10px;min-width:0}
+.h{font:18px var(--disp);margin:0}
+.small{font-size:13px;color:var(--muted);font-weight:700;margin:0;line-height:1.6}
+.empty{background:var(--paper);border:3px dashed var(--ink);padding:18px 14px;text-align:center;font-size:14px}
+.empty b{display:block;font:17px var(--disp);margin-bottom:4px}
+.bar{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--ink);color:#fff;padding:9px 12px;font-size:14px}
+.bar b{color:var(--y)}
+.tagme{background:var(--red);color:#fff;padding:1px 7px;font-size:11px;margin-left:6px;vertical-align:2px}
+
+/* ランキング */
+.t{display:flex;align-items:stretch;background:var(--paper);border:3px solid var(--ink);box-shadow:5px 5px 0 var(--ink);min-width:0}
+.t .r{width:56px;flex:none;display:flex;align-items:center;justify-content:center;font:30px var(--num);background:var(--ink);color:#fff}
+.t .n{flex:1;min-width:0;padding:9px 10px;font-size:18px;line-height:1.25;display:flex;flex-direction:column;justify-content:center;overflow-wrap:anywhere}
+.t .n small{font-size:12px;color:var(--muted);font-weight:700}
+.t .c{font:44px/1 var(--num);color:var(--blue);padding:0 12px;display:flex;align-items:center;font-variant-numeric:tabular-nums}
+.t .c span{font:14px var(--disp);color:var(--ink);margin-left:2px}
+.t.first{background:var(--cream)}
+.t.first .r{background:var(--red)}
+.t.mine{outline:4px solid var(--blue);outline-offset:-1px}
+.t.q .c{color:var(--muted)}
+.secret{background:var(--ink);color:var(--y);border:3px solid var(--ink);padding:14px;text-align:center}
+.secret b{display:block;font:24px var(--disp);margin-bottom:4px}
+.secret span{font-size:13px;color:#fff}
+.hint{display:flex;gap:10px;align-items:flex-start;background:var(--paper);border:3px solid var(--ink);box-shadow:5px 5px 0 var(--blue);padding:10px 12px}
+.hint time{font:15px var(--num);background:var(--blue);color:#fff;padding:2px 6px;flex:none}
+.hint p{margin:0;font-size:16px;line-height:1.45}
+.hint.new{box-shadow:5px 5px 0 var(--red)}
+.prizes{background:var(--blue);color:#fff;border:3px solid var(--ink);padding:10px 12px;display:grid;gap:4px;font-size:14px}
+.prizes b{color:var(--y)}
+.total{background:var(--paper);border:3px dashed var(--ink);padding:8px 12px;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.total b{font:22px var(--num);color:var(--red)}
+.result{background:var(--red);color:#fff;border:3px solid var(--ink);padding:12px;text-align:center;font:24px var(--disp)}
+
+/* カウント */
+.plus{display:flex;align-items:center;gap:10px;width:100%;border:3px solid var(--ink);background:var(--paper);box-shadow:5px 5px 0 var(--ink);padding:0;text-align:left;min-width:0}
+.plus .n{flex:1;min-width:0;padding:14px 12px;font-size:19px;overflow-wrap:anywhere}
+.plus .c{font:30px var(--num);color:var(--blue);font-variant-numeric:tabular-nums}
+.plus .p{align-self:stretch;flex:none;width:84px;display:flex;align-items:center;justify-content:center;background:var(--red);color:#fff;font:28px var(--num);border-left:3px solid var(--ink)}
+.plus:active:not(:disabled){transform:translate(4px,4px);box-shadow:1px 1px 0 var(--ink)}
+.plus:disabled{cursor:not-allowed;opacity:.6}
+.list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.list li{display:flex;align-items:center;gap:8px;font-size:15px;min-width:0;flex-wrap:wrap}
+.list time{font:15px var(--num);color:var(--muted);width:46px;flex:none}
+.list .what{flex:1;min-width:0;overflow-wrap:anywhere}
+.list .del{color:var(--muted);text-decoration:line-through}
+.btn{border:3px solid var(--ink);background:var(--paper);font-size:13px;padding:5px 10px;flex:none}
+.btn.red{background:var(--red);color:#fff}
+.btn.blue{background:var(--blue);color:#fff}
+.chip{font-size:11px;padding:1px 6px;border:2px solid var(--ink);flex:none}
+.chip.on{background:var(--red);color:#fff;border-color:var(--red)}
+
+/* 入力 */
+form{display:grid;gap:10px;margin:0}
+label{display:grid;gap:4px;font-size:14px}
+input,select{font:inherit;font-weight:700;font-size:16px;color:var(--ink);background:var(--paper);border:3px solid var(--ink);padding:10px 12px;width:100%;border-radius:0;-webkit-appearance:none;appearance:none}
+.row{display:flex;gap:8px;align-items:center}
+.row > input,.row > select{flex:1;min-width:0}
+.go{border:3px solid var(--ink);background:var(--blue);color:#fff;font:17px var(--disp);padding:11px;box-shadow:4px 4px 0 var(--ink);width:100%}
+.go.red{background:var(--red)}
+.go:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.go:disabled,input:disabled{opacity:.5}
+.pick{display:grid;gap:8px}
+.pick button{border:3px solid var(--ink);background:var(--paper);padding:12px;text-align:left;font-size:17px}
+.pick button[aria-pressed="true"]{background:var(--blue);color:#fff}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:2px solid var(--ink);padding:4px 6px;text-align:center;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+.scroll{overflow-x:auto}
+
+/* インストール案内 */
+.steps{margin:0;padding-left:1.4em;display:grid;gap:8px;font-size:16px;line-height:1.5}
+.steps b{background:var(--y);padding:0 4px}
+
+nav{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;border-top:4px solid var(--ink);background:var(--paper);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav button{flex:1;border:0;background:transparent;padding:14px 0;font:14px var(--disp)}
+nav button[aria-pressed="true"]{background:var(--ink);color:var(--y)}
+
+.toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:#fff;border:3px solid #fff;padding:8px 8px 8px 14px;display:flex;align-items:center;gap:12px;max-width:calc(100% - 32px);z-index:10;font-size:15px}
+.toast button{border:0;background:var(--y);color:var(--ink);padding:6px 10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo" id="logo">
+    <div class="sign" role="img" aria-label="wering チーズハットグ">
+      <svg width="58" height="92" viewBox="0 0 120 190" aria-hidden="true"><rect x="56" y="110" width="8" height="80" rx="3" fill="#c79a5b"/><ellipse cx="60" cy="68" rx="40" ry="62" fill="#e59a3a" stroke="#1d3fbf" stroke-width="7"/><circle cx="44" cy="50" r="6" fill="#c46a1c"/><circle cx="70" cy="84" r="7" fill="#c46a1c"/><path d="M30 60 q30 -14 60 4" stroke="#e8412c" stroke-width="8" fill="none" stroke-linecap="round"/><path d="M32 86 q28 -12 56 4" stroke="#ffd23f" stroke-width="8" fill="none" stroke-linecap="round"/></svg>
+      <div class="k">치즈핫도그</div><div class="w">wering</div><div class="e">CHEESE HOTDOG</div>
+    </div>
+    <div class="ribbon">呼び込みランキング戦!!</div>
+  </div>
+
+  <p class="status" id="status" hidden></p>
+
+  <!-- ① ホーム画面に追加の案内（ブラウザで開いたとき） -->
+  <section class="screen" id="s-install" hidden>
+    <div class="box">
+      <h2 class="h">まずはアプリを入れてね</h2>
+      <p class="small">ホーム画面に追加したアイコンから開くと使えます（通知もそこから届きます）。</p>
+      <div id="install-line" hidden class="empty"><b>LINEの中では入れられません</b>右上の「…」→「ブラウザで開く」を押してから、下の手順へ。</div>
+      <div id="install-ios">
+        <ol class="steps">
+          <li><b>Safari</b> でこのページを開く</li>
+          <li>下の <b>共有ボタン</b>（□に↑）を押す</li>
+          <li><b>ホーム画面に追加</b> → 右上の <b>追加</b></li>
+          <li>ホームの <b>wering</b> アイコンから開く</li>
+        </ol>
+      </div>
+      <div id="install-android" hidden>
+        <button class="go" id="install-btn" hidden>アプリを入れる</button>
+        <ol class="steps">
+          <li><b>Chrome</b> でこのページを開く</li>
+          <li>右上の <b>︙</b> を押す</li>
+          <li><b>ホーム画面に追加</b>（または <b>アプリをインストール</b>）</li>
+          <li>ホームの <b>wering</b> アイコンから開く</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② はじめての登録 -->
+  <section class="screen" id="s-register" hidden>
+    <form class="box" id="reg-form" autocomplete="off">
+      <h2 class="h">はじめまして！</h2>
+      <label for="reg-name">名前（とらだけが見ます）
+        <input id="reg-name" maxlength="20" placeholder="例：いなほ とら" required>
+      </label>
+      <p class="small">チームは次の画面で選びます。</p>
+      <button class="go" type="submit">はじめる</button>
+    </form>
+  </section>
+
+  <!-- ③ メイン -->
+  <section id="s-main" hidden>
+    <div class="days" role="group" aria-label="日にち">
+      <button data-day="11/3" aria-pressed="true">11/3 火祝</button>
+      <button data-day="11/4" aria-pressed="false">11/4 水</button>
+    </div>
+    <main>
+      <section id="v-rank"></section>
+      <section id="v-count" hidden></section>
+      <section id="v-me" hidden></section>
+      <section id="v-master" hidden></section>
+    </main>
+  </section>
+</div>
+
+<nav id="nav" hidden aria-label="画面"></nav>
+<div class="toast" id="toast" hidden><span id="toast-text"></span><button id="toast-undo" type="button">取り消し</button></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
