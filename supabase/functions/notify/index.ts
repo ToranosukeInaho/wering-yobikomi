@@ -1,5 +1,5 @@
 // プッシュ通知を送る Edge Function。
-//   type: "count"   … カウント係が +1 した直後にアプリから呼ぶ
+//   type: "count"   … （v4から未使用：カウントごとの通知はやめた）
 //   type: "counter" … マスターがカウント係を指名した直後にアプリから呼ぶ
 //   type: "hint"    … pg_cron から呼ぶ（新しいヒントが出たらその日の全員へ）
 // デプロイ: supabase functions deploy notify --no-verify-jwt
@@ -59,9 +59,10 @@ Deno.serve(async (req) => {
     const { data: subs } = await sb.rpc("_push_targets", {
       p_day: info.day, p_team: info.team_id, p_mode: info.hidden ? "team" : "others", p_member: null,
     });
+    const n = Number(info.n) || 1;
     const msg: Msg = info.hidden
-      ? { title: `${info.team_name} +1！`, body: "あなたのチームに1人追加！この調子！", tag: "count" }
-      : { title: `${info.team_name} +1`, body: "ライバルが呼び込み中！負けるな！", tag: "count" };
+      ? { title: `${info.team_name} +${n}！`, body: `あなたのチームに${n}人追加！この調子！`, tag: "count" }
+      : { title: `${info.team_name} +${n}`, body: "ライバルが呼び込み中！負けるな！", tag: "count" };
     background(send(subs, msg));
     return json({ ok: true });
   }
@@ -75,12 +76,15 @@ Deno.serve(async (req) => {
   }
 
   if (body.type === "hint") {
-    if (!CRON_SECRET || body.cron_secret !== CRON_SECRET) return json({ ok: false }, 403);
+    // 合言葉は DB の config.cron_secret（cron の SQL がそこから読んで送ってくる）
+    const { data: cfg } = await sb.from("config").select("cron_secret").eq("id", 1).single();
+    const okSecret = (CRON_SECRET && body.cron_secret === CRON_SECRET) || (cfg?.cron_secret && body.cron_secret === cfg.cron_secret);
+    if (!okSecret) return json({ ok: false }, 403);
     const { data: due } = await sb.rpc("_due_hint_slots");
     let sent = 0;
     for (const d of (due ?? []) as { day: string; slot: number }[]) {
       const { data: subs } = await sb.rpc("_push_targets", { p_day: d.day, p_team: null, p_mode: "day", p_member: null });
-      sent += await send(subs, { title: "新しいヒントが出ました", body: "アプリを開いて、自分のチームの順位を推理しよう", tag: "hint" });
+      sent += await send(subs, { title: "🔍 新しいヒントが届きました！", body: "アプリを開いて、自分のチームの順位を推理しよう", tag: "hint" });
     }
     return json({ ok: true, slots: due?.length ?? 0, sent });
   }

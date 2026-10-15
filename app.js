@@ -71,6 +71,7 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { $("toast").hidden = true; }, 4000);
   }
   $("toast-undo").addEventListener("click", () => { if (undoId) undoCount(undoId); $("toast").hidden = true; });
+  // 通知のONは何度でも押せる（許可済みなら登録し直すだけ）
 
   // ---------- 起動 ----------
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
@@ -137,12 +138,7 @@
       S.board = board; S.teams[S.day] = teams;
       const myDay = S.me && S.me.team_day === S.day;
       S.hints = board.hidden && myDay ? await api("get_hints", { ...auth(), p_day: S.day }) : [];
-      if (canCount()) {
-        [S.recent, S.people] = await Promise.all([
-          api("history", { ...auth(), p_day: S.day, p_limit: 10 }),
-          api("members_for_count", { ...auth(), p_day: S.day }),
-        ]);
-      }
+      if (canCount()) S.recent = await api("history", { ...auth(), p_day: S.day, p_limit: 12 });
       if (S.me && S.me.is_master && S.tab === "master") await loadMaster();
       status("");
     } catch (e) { fail(e); }
@@ -189,27 +185,32 @@
   }
 
   // ---------- 操作 ----------
-  const personName = (id) => { const p = S.people.find((x) => x.id === id); return p ? p.name : ""; };
-  function bump(id, d) { const p = S.people.find((x) => x.id === id); if (p) { p.n = Math.max(0, p.n + d); renderAll(); } }
-  async function addCount(memberId) {
-    bump(memberId, 1);
+  const teamName = (id) => { const t = S.teams[S.day].find((x) => x.id === id); return t ? t.name : ""; };
+  let busy = false;
+  async function addCount(teamId, n) {
+    if (busy) return; busy = true;
     try {
-      const id = await api("add_count", { ...auth(), p_member: memberId });
-      toast(personName(memberId) + " +1", id);
-      notify({ type: "count", count_id: id });
-      refresh();
-    } catch (e) { bump(memberId, -1); fail(e); loadMe().then(renderAll); }
+      const ids = await api("add_team_count", { ...auth(), p_team: teamId, p_n: n });
+      toast(teamName(teamId) + " +" + n, ids);
+      await refresh();
+    } catch (e) { fail(e); loadMe().then(renderAll); }
+    finally { busy = false; }
   }
-  async function minusCount(memberId) {
-    bump(memberId, -1);
+  async function minusCount(teamId) {
+    if (busy) return; busy = true;
     try {
-      await api("minus_count", { ...auth(), p_member: memberId, p_day: S.day });
-      toast(personName(memberId) + " -1");
-      refresh();
-    } catch (e) { bump(memberId, 1); fail(e); }
+      await api("minus_team_count", { ...auth(), p_team: teamId });
+      toast(teamName(teamId) + " -1");
+      await refresh();
+    } catch (e) { fail(e); }
+    finally { busy = false; }
   }
   async function undoCount(id) {
-    try { await api("undo_count", { ...auth(), p_count: Number(id) }); toast("取り消しました"); refresh(); } catch (e) { fail(e); }
+    try {
+      if (Array.isArray(id)) await api("undo_counts", { ...auth(), p_ids: id });
+      else await api("undo_count", { ...auth(), p_count: Number(id) });
+      toast("取り消しました"); refresh();
+    } catch (e) { fail(e); }
   }
   async function pickTeam(teamId) {
     try { await api("set_my_team", { ...auth(), p_team: teamId }); await loadMe(); toast("チームを登録しました"); refresh(); } catch (e) { fail(e); }
@@ -246,7 +247,6 @@
       const el = $("v-" + k);
       el.innerHTML = S.me ? fn() : "";
       el.style.cssText = "display:grid;gap:12px";
-      if (k === "count") applyFilter();
       if (S.tab !== k) el.hidden = true;
     }
   }
@@ -274,7 +274,7 @@
     let h = "";
     if (!mine && S.teams[S.day].length) h += teamPicker(S.day + "の自分のチームを選んでね");
     if (pushSupported() && !S.pushOn && Notification.permission !== "denied")
-      h += `<div class="box"><h2 class="h">通知をONにしよう</h2><p class="small">ライバルのカウントやヒントが届きます。</p><button class="go" data-act="push">通知をONにする</button></div>`;
+      h += `<div class="box"><h2 class="h">通知をONにしよう</h2><p class="small">30分ごとのヒントが届きます。</p><button class="go" data-act="push">通知をONにする</button></div>`;
     if (!b.teams.length) return h + empty(S.day + "のチームはまだありません", "とらがチームを作るまで待ってね");
 
     if (b.revealed) h += `<div class="result">🎉 ${esc(S.day)} 結果発表！ 🎉</div>`;
@@ -313,43 +313,45 @@
 
   function renderCount() {
     let h = counterBar();
-    h += `<p class="small">申告してきた人を探して「+1」。押し間違えは「-1」で戻せます。</p>`;
-    if (!S.people.length) return h + empty(S.day + "にチームがある人がいません", "みんながチームを選ぶとここに並びます");
-    h += `<input id="q" type="search" placeholder="名前で探す" value="${esc(S.q)}" autocomplete="off">`;
-    let cur = null;
-    for (const p of S.people) {
-      if (p.team_id !== cur) { if (cur) h += `</div>`; cur = p.team_id; h += `<div class="grp"><h3>${esc(p.team_name)}</h3>`; }
-      h += `<div class="person" data-name="${esc(p.name)}"><span class="n">${esc(p.name)}</span><span class="c">${p.n}</span>
-        <button class="mbtn" data-act="minus" data-id="${esc(p.id)}" aria-label="${esc(p.name)} -1">-1</button>
-        <button class="pbtn" data-act="plus" data-id="${esc(p.id)}" aria-label="${esc(p.name)} +1">+1</button></div>`;
-    }
-    h += `</div>`;
+    h += `<p class="small">「〇〇チーム〇人！」と申告されたら、そのチームの人数ボタンを押す。押し間違えは「-1」か下の取り消しで。</p>`;
+    const teams = S.teams[S.day];
+    if (!teams.length) return h + empty(S.day + "のチームはまだありません");
+    const score = (id) => { const t = S.board && S.board.teams.find((x) => x.id === id); return t && t.score != null ? t.score : "—"; };
+    h += teams.map((t) => `<div class="tc"><div class="tc-head"><span class="n">${esc(t.name)}</span><span class="c">${score(t.id)}<small>人</small></span></div>
+      <div class="tc-btns"><button class="mbtn" data-act="minus" data-id="${esc(t.id)}">-1</button>${[1, 2, 3, 4, 5].map((n) =>
+        `<button class="pbtn" data-act="plus" data-n="${n}" data-id="${esc(t.id)}">+${n}</button>`).join("")}</div></div>`).join("");
     const recent = S.recent.filter((c) => !c.deleted);
     if (recent.length) {
       h += `<div class="box"><h2 class="h">さっきのカウント</h2><ul class="list">${recent.map((c) =>
-        `<li><time>${hhmm(c.at)}</time><span class="what">${esc(c.to_name || "?")}（${esc(c.team_name)}）+1</span><button class="btn" data-act="undo" data-id="${c.id}">取り消し</button></li>`).join("")}</ul></div>`;
+        `<li><time>${hhmm(c.at)}</time><span class="what">${esc(c.team_name)} +1</span><button class="btn" data-act="undo" data-id="${c.id}">取り消し</button></li>`).join("")}</ul></div>`;
     }
     return h;
-  }
-  function applyFilter() {
-    const q = S.q.trim();
-    document.querySelectorAll("#v-count .person").forEach((el) => { el.hidden = !!q && !el.dataset.name.includes(q); });
-    document.querySelectorAll("#v-count .grp").forEach((g) => { g.hidden = ![...g.querySelectorAll(".person")].some((el) => !el.hidden); });
   }
 
   function renderRules() {
     const rule = (t, s) => `<li><b>${t}</b>${s ? `<span>${s}</span>` : ""}</li>`;
-    return `<div class="box rules"><h2 class="h">禁止事項</h2><ol>
-        ${rule("すでに並んでいる人を呼び込みに数えない", "列に並んでいる人に声をかけて、自分の申告にするのはNG")}
+    return `<div class="box rules"><h2 class="h">申告のしかた</h2><ol>
+        ${rule("連れてきたメンバーが、自分でカウント係に申告", "「〇〇チーム〇人！」と伝える")}
+        ${rule("お客さんに「カウント係に言っといて」はNG", "お客さんに失礼なので、必ずメンバーが申告する")}
+        ${rule("お客さんへの確認はしない", "信用ゲームです！申告をそのまま信じてカウントします")}
+      </ol></div>
+      <div class="box rules"><h2 class="h">禁止事項</h2><ol>
+        ${rule("すでに並んでいる人を呼び込みに数えない", "列に並んでいる人に声をかけて、自分のチームの申告にするのはNG")}
         ${rule("強引に連れてこない", "腕を引く・しつこく付きまとうなど、相手が嫌がる呼び込みはNG")}
-        ${rule("虚偽の申告をしない", "呼んでいない人の申告や水増しはNG")}
+        ${rule("虚偽の申告をしない", "連れてきていない人数の申告や水増しはNG")}
       </ol><p class="small">違反がわかったら、そのカウントは取り消します。</p></div>
       <div class="box rules"><h2 class="h">しくみ</h2><ul>
-        <li>お客さんを連れてきたら、カウント係に名前を申告 → 係が+1</li>
-        <li>ランキングはチーム単位。個人の数は出ません</li>
-        <li>12:30から順位は非公開。30分ごとに自分のチームにだけヒントが届きます</li>
+        <li>ランキングはチーム単位</li>
+        <li>決まった時刻（基本は12:30）から順位は非公開。30分ごとに自分のチームにだけヒントが届きます（通知あり）</li>
         <li>最後に結果発表！ 1〜3位に景品あり</li>
       </ul></div>`;
+  }
+
+  function pushBox() {
+    if (!pushSupported()) return `<div class="box"><h2 class="h">通知</h2><p class="small">この開き方では通知が使えません。ホーム画面のweringアイコンから開いてください（iPhoneはiOS 16.4以上）。</p></div>`;
+    if (Notification.permission === "denied") return `<div class="box"><h2 class="h">通知：ブロック中</h2><p class="small">一度「許可しない」を選ぶと、アプリからはONにできません。<br>iPhone：設定 → 通知 → wering → 通知を許可<br>Android：設定 → アプリ → wering → 通知</p><button class="go" data-act="push">ONにしたので登録し直す</button></div>`;
+    if (S.pushOn) return `<div class="box"><h2 class="h">通知：ON</h2><p class="small">アプリを閉じていても届きます。届かないときは下を押してください。</p><button class="btn" data-act="push">通知を登録し直す</button></div>`;
+    return `<div class="box"><h2 class="h">通知：OFF</h2><p class="small">30分ごとのヒントが届きます。</p><button class="go" data-act="push">通知をONにする</button></div>`;
   }
 
   function renderMe() {
@@ -357,9 +359,7 @@
     let h = `<div class="box"><h2 class="h">${esc(me.name)}${me.is_master ? '<span class="tagme">マスター</span>' : ""}${me.is_counter ? '<span class="tagme">カウント係</span>' : ""}</h2>
       <p class="small">${esc(S.day)}のチーム：${me.team_day === S.day ? esc(me.team_name) : "未選択"}</p></div>`;
     h += teamPicker(S.day + "のチームを変える");
-    if (!pushSupported()) h += `<div class="box"><h2 class="h">通知</h2><p class="small">この開き方では通知が使えません。ホーム画面のアイコンから開いてください。</p></div>`;
-    else if (S.pushOn) h += `<div class="box"><h2 class="h">通知：ON</h2><p class="small">止めたいときは、設定アプリの通知からweringをOFFに。</p></div>`;
-    else h += `<div class="box"><h2 class="h">通知：OFF</h2><button class="go" data-act="push">通知をONにする</button></div>`;
+    h += pushBox();
     if (S.showKey && !me.is_master) {
       h += `<form class="box" data-form="key" autocomplete="off"><h2 class="h">マスター合言葉</h2><input id="key-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button class="go" type="submit">送る</button></form>`;
     }
@@ -370,6 +370,24 @@
     if (!S.settings) return empty("読み込み中…");
     const day = S.day, teams = S.teams[day], st = S.settings;
     let h = counterBar();
+
+    // 順位の表示（時刻設定・手動スイッチ・ヒント間隔）
+    const hideAt = st.hide_at && st.hide_at[day], hidTime = (st.hide_times && st.hide_times[day]) || "12:30";
+    const manual = st.manual_hide && st.manual_hide[day];
+    const state = (st.revealed || []).includes(day) ? "結果発表済み（全員に公開中）"
+      : (st.shown || []).includes(day) ? "手動で公開中"
+      : manual ? `手動で非公開中（${hhmm(manual)}〜）`
+      : st.hidden && st.hidden[day] ? `非公開中（${hhmm(hideAt)}〜・時刻設定）`
+      : `公開中（${hidTime}から自動で非公開）`;
+    const isHidden = st.hidden && st.hidden[day];
+    h += `<div class="box"><h2 class="h">${esc(day)}の順位の表示</h2>
+      <div class="state${isHidden ? " off" : ""}">${isHidden ? "🙈" : "👀"} ${esc(state)}</div>
+      <div class="row"><button class="btn red grow" data-act="vis-hide">今すぐ隠す</button><button class="btn blue grow" data-act="vis-show">今すぐ公開</button></div>
+      <button class="btn" data-act="vis-auto">時刻設定に戻す</button>
+      <label>自動で隠す時刻<div class="row"><input id="hide-time" type="time" value="${esc(hidTime)}"><button class="btn" data-act="hide-time">保存</button></div></label>
+      <div><span class="small">ヒントの間隔（リハーサルは1分）</span><div class="row seg">${[1, 5, 30].map((n) =>
+        `<button class="btn${st.slot_minutes === n ? " blue" : ""}" data-act="slot" data-n="${n}">${n}分</button>`).join("")}</div></div>
+      <p class="small">隠すとその時刻から${st.slot_minutes}分ごとにヒントが出て、通知が届きます。</p></div>`;
 
     // チーム
     const nIn = (tid) => S.members.filter((m) => m.team_id === tid).length;
@@ -391,12 +409,12 @@
       if (m.team_id && !inDay) o = `<option value="" selected>${esc(m.team_day)}：${esc(m.team_name)}</option>` + `<option value="">—（未所属）</option>`;
       return o + teams.map((t) => `<option value="${esc(t.id)}"${inDay && t.id === m.team_id ? " selected" : ""}>${esc(t.name)}</option>`).join("");
     };
-    h += `<div class="box"><h2 class="h">メンバー（${S.members.length}人）</h2><p class="small">チームを選ぶとすぐ移動します。「係にする」でその人の端末にカウント権限と通知が飛びます。</p><ul class="list">${S.members.map((m) =>
-      `<li><span class="what">${esc(m.name)} ${m.is_counter ? '<span class="chip on">係</span>' : ""} ${m.push ? '<span class="chip">通知</span>' : ""}</span>
-        <select data-act="move" data-id="${esc(m.id)}" style="width:auto;max-width:44%;padding:6px 8px;font-size:14px">${opts(m)}</select>
+    h += `<div class="box"><h2 class="h">メンバー（${S.members.length}人）</h2><p class="small">チームを選ぶとすぐ移動します。「係にする」でその人の端末にカウント権限が付きます。</p><ul class="mlist">${S.members.map((m) =>
+      `<li><div class="mtop"><span class="mname">${esc(m.name)}</span>${m.is_counter ? '<span class="chip on">係</span>' : ""}${m.push ? '<span class="chip">通知ON</span>' : '<span class="chip off">通知OFF</span>'}</div>
+        <div class="mbot"><select data-act="move" data-id="${esc(m.id)}">${opts(m)}</select>
         ${m.is_counter ? "" : S.pending === "c:" + m.id
           ? `<button class="btn red" data-act="counter-yes" data-id="${esc(m.id)}">本当に？</button><button class="btn" data-act="cancel">やめる</button>`
-          : `<button class="btn" data-act="counter" data-id="${esc(m.id)}">係にする</button>`}</li>`).join("")}</ul></div>`;
+          : `<button class="btn" data-act="counter" data-id="${esc(m.id)}">係にする</button>`}</div></li>`).join("")}</ul></div>`;
 
     // 時間帯別
     const live = S.hist.filter((c) => !c.deleted);
@@ -407,7 +425,7 @@
 
     // 履歴
     h += `<div class="box"><h2 class="h">履歴（${S.hist.length}件）</h2><ul class="list" style="max-height:340px;overflow:auto">${S.hist.map((c) =>
-      `<li><time>${hhmm(c.at)}</time><span class="what${c.deleted ? " del" : ""}">${esc(c.to_name || "?")}（${esc(c.team_name)}）+1 <span class="small">係：${esc(c.by_name || "?")}</span></span>${c.deleted ? "" : `<button class="btn" data-act="undo" data-id="${c.id}">取消</button>`}</li>`).join("") || '<li class="small">まだありません</li>'}</ul></div>`;
+      `<li><time>${hhmm(c.at)}</time><span class="what${c.deleted ? " del" : ""}">${esc(c.team_name)} +1 <span class="small">係：${esc(c.by_name || "?")}</span></span>${c.deleted ? "" : `<button class="btn" data-act="undo" data-id="${c.id}">取消</button>`}</li>`).join("") || '<li class="small">まだありません</li>'}</ul></div>`;
 
     // カウント係の履歴
     h += `<div class="box"><h2 class="h">カウント係の履歴</h2><ul class="list" style="max-height:240px;overflow:auto">${S.clog.map((l) =>
@@ -427,10 +445,6 @@
         }<button class="go red" data-act="reveal-yes">公開する</button><button class="btn" data-act="cancel">やめる</button></div>`
       : `<button class="go red" data-act="reveal">結果発表する（全員に順位を公開）</button>`}</div>`;
 
-    // リハーサル
-    h += `<div class="box"><h2 class="h">リハーサル</h2><p class="small">${st.force_at ? `テスト中：${hhmm(st.force_at)}から非公開・ヒント${st.slot_minutes}分ごと` : "本番設定（12:30から非公開・ヒント30分ごと）"}</p>
-      <div class="row"><select id="slot-min" style="flex:1"><option value="1">ヒント1分ごと</option><option value="5">ヒント5分ごと</option><option value="30">ヒント30分ごと</option></select><button class="btn red" data-act="test-on">今から隠す</button></div>
-      <button class="btn" data-act="test-off">本番設定に戻す</button></div>`;
     return h;
   }
 
@@ -444,7 +458,7 @@
     if (!b || b.tagName === "SELECT") return;
     const id = b.dataset.id;
     switch (b.dataset.act) {
-      case "plus": addCount(id); break;
+      case "plus": addCount(id, Number(b.dataset.n) || 1); break;
       case "minus": minusCount(id); break;
       case "del": S.pending = "d:" + id; renderAll(); break;
       case "del-yes": masterDo("delete_team", { p_team: id }, "削除しました（元に戻せます）"); break;
@@ -459,12 +473,14 @@
       case "reveal": S.pending = "reveal"; renderAll(); break;
       case "reveal-yes": masterDo("set_reveal", { p_day: S.day, p_on: true }, "結果発表しました！"); break;
       case "reveal-off": masterDo("set_reveal", { p_day: S.day, p_on: false }, "非公開に戻しました"); break;
-      case "test-on": masterDo("set_test", { p_force: true, p_slot_minutes: Number($("slot-min").value) }, "今から非公開にしました"); break;
-      case "test-off": masterDo("set_test", { p_force: false, p_slot_minutes: 30 }, "本番設定に戻しました"); break;
+      case "vis-hide": masterDo("set_visibility", { p_day: S.day, p_mode: "hide" }, "今から非公開にしました"); break;
+      case "vis-show": masterDo("set_visibility", { p_day: S.day, p_mode: "show" }, "全員に公開しました"); break;
+      case "vis-auto": masterDo("set_visibility", { p_day: S.day, p_mode: "auto" }, "時刻設定に戻しました"); break;
+      case "hide-time": { const v = $("hide-time").value; if (v) masterDo("set_hide_time", { p_day: S.day, p_time: v }, v + "から隠す設定にしました"); break; }
+      case "slot": masterDo("set_test", { p_force: false, p_slot_minutes: Number(b.dataset.n) }, "ヒント" + b.dataset.n + "分ごとにしました"); break;
     }
   });
   document.addEventListener("input", (e) => {
-    if (e.target.id === "q") { S.q = e.target.value; applyFilter(); }
   });
   document.addEventListener("change", (e) => {
     const s = e.target.closest('select[data-act="move"]');

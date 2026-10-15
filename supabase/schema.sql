@@ -533,20 +533,6 @@ begin
 end $$;
 
 -- ---------- 通知用（Edge Function から service_role で呼ぶ） ----------
-create or replace function _claim_count_notify(p_id uuid, p_secret text, p_count bigint) returns json
-language plpgsql security definer set search_path = public, extensions as $$
-declare m members; c counts; tname text;
-begin
-  m := _auth(p_id, p_secret);
-  update counts set notified = true
-   where id = p_count and counted_by = m.id and not notified and deleted_at is null
-     and created_at > now() - interval '5 minutes'
-  returning * into c;
-  if c.id is null then return null; end if;
-  select name into tname from teams where id = c.team_id;
-  return json_build_object('day', c.day, 'team_id', c.team_id, 'team_name', tname, 'hidden', _hidden(c.day));
-end $$;
-
 -- p_mode: 'others' その日の他チーム全員 / 'team' そのチームだけ / 'day' その日の全員 / 'member' 1人
 create or replace function _push_targets(p_day text, p_team uuid, p_mode text, p_member uuid default null)
 returns table(endpoint text, p256dh text, auth text)
@@ -611,6 +597,197 @@ to anon, authenticated;
 -- Edge Function（service_role）は全部使える
 grant execute on all functions in schema public to service_role;
 grant all on all tables in schema public to service_role;
+
+-- ---------- v3：チームに「〇人」まとめてカウント ----------
+create or replace function add_team_count(p_id uuid, p_secret text, p_team uuid, p_n int) returns bigint[]
+language plpgsql security definer set search_path = public, extensions as $$
+declare m members; t teams; ids bigint[];
+begin
+  m := _auth(p_id, p_secret);
+  if not _is_counter(m) then raise exception 'not_counter'; end if;
+  t := _live_team(p_team);
+  if t.id is null then raise exception 'no_team'; end if;
+  if p_n is null or p_n < 1 or p_n > 20 then raise exception 'bad_n'; end if;
+  with ins as (
+    insert into counts(team_id, day, counted_by)
+    select t.id, t.day, m.id from generate_series(1, p_n)
+    returning id)
+  select array_agg(id order by id) into ids from ins;
+  return ids;
+end $$;
+
+-- そのチームのその日の最新1件を取り消す（-1）
+create or replace function minus_team_count(p_id uuid, p_secret text, p_team uuid) returns bigint
+language plpgsql security definer set search_path = public, extensions as $$
+declare m members; cid bigint;
+begin
+  m := _auth(p_id, p_secret);
+  if not _is_counter(m) then raise exception 'not_counter'; end if;
+  select id into cid from counts where team_id = p_team and deleted_at is null
+   order by created_at desc, id desc limit 1;
+  if cid is null then raise exception 'nothing_to_minus'; end if;
+  update counts set deleted_at = now() where id = cid;
+  return cid;
+end $$;
+
+-- まとめて取り消し（直前の「+3」を丸ごと戻す用）
+create or replace function undo_counts(p_id uuid, p_secret text, p_ids bigint[]) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+declare m members;
+begin
+  m := _auth(p_id, p_secret);
+  if not _is_counter(m) then raise exception 'not_counter'; end if;
+  update counts set deleted_at = now() where id = any(p_ids) and deleted_at is null;
+end $$;
+
+-- 通知用：同時に入れた分（+3なら3件）をまとめて1回の通知にする
+create or replace function _claim_count_notify(p_id uuid, p_secret text, p_count bigint) returns json
+language plpgsql security definer set search_path = public, extensions as $$
+declare m members; c counts; tname text; n int;
+begin
+  m := _auth(p_id, p_secret);
+  select * into c from counts
+   where id = p_count and counted_by = m.id and not notified and deleted_at is null
+     and created_at > now() - interval '5 minutes';
+  if c.id is null then return null; end if;
+  with u as (
+    update counts set notified = true
+     where team_id = c.team_id and counted_by = c.counted_by and created_at = c.created_at and not notified
+    returning 1)
+  select count(*) into n from u;
+  select name into tname from teams where id = c.team_id;
+  return json_build_object('day', c.day, 'team_id', c.team_id, 'team_name', tname, 'n', n, 'hidden', _hidden(c.day));
+end $$;
+
+revoke execute on function add_team_count(uuid, text, uuid, int), minus_team_count(uuid, text, uuid),
+  undo_counts(uuid, text, bigint[]), _claim_count_notify(uuid, text, bigint) from public, anon, authenticated;
+grant execute on function add_team_count(uuid, text, uuid, int), minus_team_count(uuid, text, uuid),
+  undo_counts(uuid, text, bigint[]) to anon, authenticated;
+grant execute on all functions in schema public to service_role;
+
+-- ---------- v4：隠す時刻の設定・手動スイッチ・ヒント通知 ----------
+alter table config add column if not exists hide_times  jsonb  not null default '{"11/3":"12:30","11/4":"12:30"}';
+alter table config add column if not exists manual_hide jsonb  not null default '{}';   -- {"11/3": "2026-11-03T13:05:00+09"} 手動で隠した時刻
+alter table config add column if not exists shown       text[] not null default '{}';   -- 手動で公開中の日
+alter table config add column if not exists cron_secret text   not null default encode(extensions.gen_random_bytes(16), 'hex');
+
+-- 同じ回でも「隠し直し」たら別のヒントとして通知できるように、隠した時刻もキーに入れる
+drop table if exists hint_sent;
+create table hint_sent (
+  day     text not null,
+  slot    int  not null,
+  hide_at timestamptz not null,
+  sent_at timestamptz not null default now(),
+  primary key (day, slot, hide_at)
+);
+alter table hint_sent enable row level security;
+revoke all on hint_sent from anon, authenticated;
+grant all on hint_sent to service_role;
+
+-- 隠し始める時刻：リハーサル(force_at) → 手動で隠した時刻 → その日の設定時刻
+create or replace function _hide_at(p_day text) returns timestamptz
+language sql stable security definer set search_path = public, extensions as $$
+  select coalesce(
+    c.force_at,
+    (c.manual_hide ->> p_day)::timestamptz,
+    ((_day_date(p_day) + coalesce((c.hide_times ->> p_day)::time, c.hide_time)) at time zone 'Asia/Tokyo'))
+  from config c where c.id = 1
+$$;
+
+create or replace function _hidden(p_day text) returns boolean
+language sql stable security definer set search_path = public, extensions as $$
+  select not (p_day = any(c.revealed) or p_day = any(c.shown)) and now() >= _hide_at(p_day)
+  from config c where c.id = 1
+$$;
+
+create or replace function get_settings(p_id uuid, p_secret text) returns json
+language plpgsql stable security definer set search_path = public, extensions as $$
+declare c config;
+begin
+  perform _master(p_id, p_secret);
+  select * into c from config where id = 1;
+  return json_build_object('prizes', c.prizes, 'revealed', c.revealed, 'force_at', c.force_at,
+    'slot_minutes', c.slot_minutes, 'hide_times', c.hide_times, 'manual_hide', c.manual_hide, 'shown', c.shown,
+    'hide_at', json_build_object('11/3', _hide_at('11/3'), '11/4', _hide_at('11/4')),
+    'hidden',  json_build_object('11/3', _hidden('11/3'),  '11/4', _hidden('11/4')));
+end $$;
+
+-- その日の隠し始める時刻（HH:MM）を変える
+create or replace function set_hide_time(p_id uuid, p_secret text, p_day text, p_time text) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform _master(p_id, p_secret);
+  perform p_time::time;  -- 形式チェック
+  update config set hide_times = hide_times || jsonb_build_object(p_day, p_time) where id = 1;
+end $$;
+
+-- 手動スイッチ：p_mode = 'hide'（今すぐ隠す）/ 'show'（今すぐ公開）/ 'auto'（時刻設定に戻す）
+create or replace function set_visibility(p_id uuid, p_secret text, p_day text, p_mode text) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform _master(p_id, p_secret);
+  if p_mode = 'hide' then
+    update config set manual_hide = manual_hide || jsonb_build_object(p_day, now()),
+                      shown = array_remove(shown, p_day), revealed = array_remove(revealed, p_day), force_at = null
+    where id = 1;
+  elsif p_mode = 'show' then
+    update config set shown = array(select distinct unnest(shown || array[p_day])), force_at = null where id = 1;
+  elsif p_mode = 'auto' then
+    update config set manual_hide = manual_hide - p_day, shown = array_remove(shown, p_day), force_at = null where id = 1;
+  else
+    raise exception 'bad_mode';
+  end if;
+end $$;
+
+-- 出たばかりで、まだ通知していないヒント回
+create or replace function _due_hint_slots() returns table(day text, slot int)
+language plpgsql security definer set search_path = public, extensions as $$
+#variable_conflict use_column
+declare d text; c config; s timestamptz; h timestamptz; maxs int;
+begin
+  select * into c from config where id = 1;
+  foreach d in array array['11/3', '11/4'] loop
+    if not _hidden(d) then continue; end if;
+    h := _hide_at(d);
+    maxs := case when c.force_at is not null then 4 else _max_slots(d) end;
+    for k in 1..maxs loop
+      s := h + make_interval(mins => k * c.slot_minutes);
+      if s <= now() and s > now() - interval '15 minutes' then
+        begin
+          insert into hint_sent(day, slot, hide_at) values (d, k, h);
+          day := d; slot := k; return next;
+        exception when unique_violation then null;
+        end;
+      end if;
+    end loop;
+  end loop;
+end $$;
+
+-- cron 用：通知すべきヒントがあるか（書き込みなし）
+create or replace function _has_due_hints() returns boolean
+language plpgsql stable security definer set search_path = public, extensions as $$
+declare d text; c config; s timestamptz; h timestamptz; maxs int;
+begin
+  select * into c from config where id = 1;
+  foreach d in array array['11/3', '11/4'] loop
+    if not _hidden(d) then continue; end if;
+    h := _hide_at(d);
+    maxs := case when c.force_at is not null then 4 else _max_slots(d) end;
+    for k in 1..maxs loop
+      s := h + make_interval(mins => k * c.slot_minutes);
+      if s <= now() and s > now() - interval '15 minutes'
+         and not exists (select 1 from hint_sent x where x.day = d and x.slot = k and x.hide_at = h) then
+        return true;
+      end if;
+    end loop;
+  end loop;
+  return false;
+end $$;
+
+revoke execute on function set_hide_time(uuid, text, text, text), set_visibility(uuid, text, text, text),
+  _has_due_hints(), _due_hint_slots() from public, anon, authenticated;
+grant execute on function set_hide_time(uuid, text, text, text), set_visibility(uuid, text, text, text) to anon, authenticated;
+grant execute on all functions in schema public to service_role;
 
 -- ============================================================
 -- ★ マスター合言葉（自分だけが知っている文字列に変えてから Run）

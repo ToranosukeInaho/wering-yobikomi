@@ -115,6 +115,42 @@ li.confirm{display:flex}
 .rules li b{display:block;font-size:16px}
 .rules li span{display:block;font-size:13px;color:var(--muted);font-weight:700}
 
+/* カウント（チームごと） */
+.tc{background:var(--paper);border:3px solid var(--ink);box-shadow:5px 5px 0 var(--ink);display:grid}
+.tc-head{display:flex;align-items:center;gap:8px;padding:8px 12px}
+.tc-head .n{flex:1;min-width:0;font-size:19px;overflow-wrap:anywhere}
+.tc-head .c{font:30px var(--num);color:var(--blue);font-variant-numeric:tabular-nums}
+.tc-head .c small{font:13px var(--disp);color:var(--ink);margin-left:2px}
+.tc-btns{display:grid;grid-template-columns:1fr repeat(5,1fr);border-top:3px solid var(--ink)}
+.tc-btns button{border:0;border-left:3px solid var(--ink);padding:14px 0;font:22px var(--num)}
+.tc-btns button:first-child{border-left:0}
+.tc-btns .mbtn{background:var(--paper);color:var(--ink)}
+.tc-btns .pbtn{background:var(--red);color:#fff}
+.tc-btns button:active{filter:brightness(.8)}
+
+/* マスター：メンバー一覧・表示スイッチ */
+.mlist{list-style:none;margin:0;padding:0;display:grid}
+.mlist li{display:grid;gap:6px;padding:10px 0;border-top:2px dashed #ccc}
+.mlist li:first-child{border-top:0;padding-top:0}
+.mtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.mname{font-size:16px;margin-right:2px;overflow-wrap:anywhere}
+.mbot{display:flex;gap:8px;align-items:stretch}
+.mbot select{flex:1;min-width:0;padding:8px 10px;font-size:15px}
+.chip{white-space:nowrap;line-height:1.4}
+.chip.off{color:var(--muted);border-color:#bbb}
+.btn{white-space:nowrap}
+.btn.grow{flex:1;padding:10px;font-size:15px}
+.state{background:var(--blue);color:#fff;padding:10px 12px;font-size:15px;border:3px solid var(--ink)}
+.state.off{background:var(--ink);color:var(--y)}
+.seg{gap:6px}
+.seg .btn{flex:1;padding:8px}
+input[type=time]{flex:1;min-width:0}
+
+th,td{font-size:12px;padding:4px 3px}
+th:first-child,td:first-child{min-width:5.5em;max-width:7em;overflow-wrap:anywhere}
+.list .what .small{display:block}
+.toast button{white-space:nowrap}
+
 /* 入力 */
 form{display:grid;gap:10px;margin:0}
 label{display:grid;gap:4px;font-size:14px}
@@ -187,10 +223,10 @@ nav button[aria-pressed="true"]{background:var(--ink);color:var(--y)}
   <section class="screen" id="s-register" hidden>
     <form class="box" id="reg-form" autocomplete="off">
       <h2 class="h">はじめまして！</h2>
-      <label for="reg-name">名前（とらだけが見ます）
-        <input id="reg-name" placeholder="例：いなほ とら" required>
+      <label for="reg-name">名前（フルネームで）
+        <input id="reg-name" placeholder="例：立教 太郎" autocomplete="name" required>
       </label>
-      <p class="small">チームは次の画面で選びます。</p>
+      <p class="small">誰かわかるように、フルネームで登録してください。チームは次の画面で選びます。</p>
       <button class="go" type="submit">はじめる</button>
     </form>
   </section>

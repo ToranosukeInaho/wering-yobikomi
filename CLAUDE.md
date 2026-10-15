@@ -13,14 +13,17 @@
 - マスター：`config.master_key_hash` と一致する合言葉で `claim_master`。マスター専用関数は `_master()` を通す
 - カウント係：`config.counter_id` の1人だけが `add_count` できる（二重カウント防止）
 - 12:30以降の非公開はサーバー側（`get_board` が score/rank を null で返す）。フロントで隠しているわけではない
-- カウントは「呼んできた人（credited_to）」に付く。チームはその人の押した時点のチーム。-1 は `minus_count` でその人のその日の最新1件を論理削除
+- カウントはチームに付く（v3）。係が「〇〇チーム〇人」を `add_team_count(team, n)` で入れる（n行insert）。-1 は `minus_team_count` でそのチームの最新1件を論理削除。直前の+nは `undo_counts(ids)` で丸ごと戻す。`add_count`/`minus_count`/`credited_to` はv2の名残で未使用
+- ルール：メンバー本人が係に申告。お客さんに伝言させない。お客さんへの確認はしない（信用ゲーム）
 - カウント係（`config.counter_id`）とマスターだけが押せる（`_is_counter`）。指名の履歴は `counter_log`
 - チーム削除は論理削除（`teams.deleted_at`）。`restore_team` で戻せる。削除中のチームは全集計から除外
-- 既存DBの更新は `supabase/migration_v2.sql` のように、alter ＋ 関数の再定義だけのファイルを作って流す（schema.sql を丸ごと流すと合言葉が上書きされる）
+- 既存DBの更新は `supabase/migration_v2.sql` のように、alter ＋ 関数の再定義だけのファイルを作って流す（schema.sql を丸ごと流すと合言葉が上書きされる）。v2→v3 は `migration_v3.sql`、v3→v4 は `migration_v4.sql`
 - `_` で始まる関数は内部用。anonにgrantしない。Edge Function（service_role）からは呼べる
 
 ## 時刻
-- 判定は全部DB側の `now()`。非公開開始は `_hide_at(day)` = `config.force_at`（リハーサル）または 当日の `hide_time`（12:30 JST）
+- 判定は全部DB側の `now()`。非公開開始は `_hide_at(day)` = `force_at`（旧リハーサル）→ `manual_hide[day]`（マスターの「今すぐ隠す」）→ `hide_times[day]`（日ごとの時刻、初期12:30）の順
+- `shown`（今すぐ公開）と `revealed`（結果発表）に入っている日は非公開にならない。`set_visibility(day, hide|show|auto)` で切り替え
+- 通知はヒントだけ（v4）。pg_cron が毎分 `_has_due_hints()` を見て、あるときだけ Edge Function `notify`（type=hint）を呼ぶ。合言葉は `config.cron_secret`。設定は `supabase/cron_hints.sql`
 - ヒント回数は `_max_slots`（11/3=4, 11/4=3）、間隔は `config.slot_minutes`
 - ヒント本文は `_hint(day, team, k, slot_time, slot_minutes)`。同じチーム・同じ回は `hashtext` で毎回同じパターンになる。**文は必ず真実にすること**、1位チームに1位と分かる文を出さないこと
 
