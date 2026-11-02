@@ -189,7 +189,8 @@ begin
     return format('全チーム合計で、この%s分に%s人呼び込みました', p_sm, tot);
 
   elsif kind = 2 then
-    if opt = 2 and n <= 5 then opt := 0; end if;
+    if n <= 4 then opt := 1;                    -- 4チーム以下は「上位3」で最下位がバレるので上半分/下半分だけ
+    elsif opt = 2 and n <= 5 then opt := 0; end if;
     if opt = 0 then
       return case when myrank <= 3 then '上位3チームに入っています' else '上位3チームには入っていません' end;
     elsif opt = 1 then
