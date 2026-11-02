@@ -16,6 +16,7 @@
     board: null, hints: [], teams: { "11/3": [], "11/4": [] }, recent: [],
     members: [], hist: [], settings: null, people: [], deleted: [], clog: [], q: "",
     pending: null, pushOn: false, logoTaps: 0, showKey: false, tick: 0,
+    roster: null, regPick: null,
   };
 
   // ---------- 共通 ----------
@@ -25,6 +26,9 @@
   }
   const hhmm = (iso) => { const d = new Date(iso); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
   const auth = () => ({ p_id: S.id, p_secret: S.secret });
+  // その日の自分のチーム（なければ null）
+  const myTeam = (day) => (S.me && S.me.teams && S.me.teams[day]) || null;
+  const newSecret = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
 
   const ERR = {
     not_registered: "登録が見つかりません。もう一度名前を入れてください。",
@@ -32,6 +36,8 @@
     not_master: "マスター専用の操作です。",
     no_team: "その人はこの日のチームに入っていません。",
     nothing_to_minus: "取り消せるカウントがありません。",
+    taken: "その名前はもう登録されています。自分じゃなければ、とらに伝えてね。",
+    ask_master: "チームの変更は、とらに伝えてね。",
   };
   function status(msg) { const el = $("status"); el.textContent = msg || ""; el.hidden = !msg; }
 
@@ -85,8 +91,62 @@
 
   function resetIdentity() {
     store.set("id", null); store.set("secret", null); S.id = S.secret = null; S.me = null;
-    show("s-register"); status("登録が見つかりませんでした。もう一度名前を入れてください。");
+    initRegister(); status("登録が見つかりませんでした。もう一度、自分の名前を選んでください。");
   }
+
+  // ---------- 最初の画面：自分の名前を選ぶ ----------
+  async function initRegister() {
+    show("s-register");
+    $("reg-pick").innerHTML = empty("読み込み中…");
+    try {
+      const [roster, teams] = await Promise.all([api("list_roster"), api("list_teams", { p_day: todayDay() })]);
+      S.roster = roster; S.teams[todayDay()] = teams; status("");
+    } catch (e) { status(e.message); S.roster = []; }
+    renderRegister();
+  }
+  function renderRegister() {
+    const day = todayDay(), list = S.roster || [];
+    if (S.regPick) {
+      const m = list.find((x) => x.id === S.regPick);
+      const t = (d) => (m.teams && m.teams[d] ? esc(m.teams[d].name) : "なし");
+      $("reg-pick").innerHTML = `<div class="box"><h2 class="h">${esc(m.name)}さんで合ってる？</h2>
+        <p class="small">11/3：${t("11/3")}<br>11/4：${t("11/4")}</p>
+        <button class="go" data-reg="yes">はい、わたしです</button><button class="btn" data-reg="back">ちがう・戻る</button></div>`;
+      return;
+    }
+    const groups = new Map();
+    for (const m of list) {
+      const k = m.teams && m.teams[day] ? m.teams[day].name : "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(m);
+    }
+    const order = (S.teams[day] || []).map((t) => t.name);
+    const keys = [...groups.keys()].filter((k) => k).sort((a, b) => order.indexOf(a) - order.indexOf(b)).concat(groups.has("") ? [""] : []);
+    let h = `<div class="box"><h2 class="h">あなたは誰？</h2><p class="small">自分の名前を押してね。チームは決まっています（${esc(day)}のチームで表示中）。</p></div>`;
+    h += keys.map((k) => `<div class="box"><h2 class="h">${k ? esc(k) : esc(day) + "はチームなし"}</h2><div class="pick">${groups.get(k).map((m) =>
+      `<button data-reg="pick" data-id="${esc(m.id)}"${m.claimed ? " disabled" : ""}>${esc(m.name)}${m.claimed ? ' <span class="small">登録済み</span>' : ""}</button>`).join("")}</div></div>`).join("");
+    h += `<button class="btn" data-reg="other">リストに名前がない</button>`;
+    $("reg-pick").innerHTML = h;
+  }
+  $("s-register").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-reg]"); if (!b) return;
+    const act = b.dataset.reg;
+    if (act === "pick") { S.regPick = b.dataset.id; renderRegister(); scrollTo(0, 0); }
+    else if (act === "back") { S.regPick = null; renderRegister(); }
+    else if (act === "other") { $("reg-form").hidden = false; $("reg-name").focus(); }
+    else if (act === "yes") {
+      const secret = newSecret();
+      try {
+        const id = await api("claim_member", { p_member: S.regPick, p_secret: secret });
+        S.id = id; S.secret = secret; store.set("id", id); store.set("secret", secret);
+        S.regPick = null; status(""); start();
+      } catch (err) {
+        S.regPick = null; status(err.message);
+        try { S.roster = await api("list_roster"); } catch { /* そのまま */ }
+        renderRegister();
+      }
+    }
+  });
 
   function initInstall() {
     show("s-install");
@@ -102,8 +162,7 @@
   $("reg-form").addEventListener("submit", async (ev) => {
     ev.preventDefault(); if (document.activeElement) document.activeElement.blur(); composing = false;
     const name = $("reg-name").value.trim().slice(0, 20); if (!name) return;
-    const bytes = crypto.getRandomValues(new Uint8Array(24));
-    const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    const secret = newSecret();
     try {
       const id = await api("register", { p_name: name, p_secret: secret });
       S.id = id; S.secret = secret; store.set("id", id); store.set("secret", secret);
@@ -136,7 +195,7 @@
         api("list_teams", { p_day: S.day }),
       ]);
       S.board = board; S.teams[S.day] = teams;
-      const myDay = S.me && S.me.team_day === S.day;
+      const myDay = !!myTeam(S.day);
       S.hints = board.hidden && myDay ? await api("get_hints", { ...auth(), p_day: S.day }) : [];
       if (canCount()) S.recent = await api("history", { ...auth(), p_day: S.day, p_limit: 12 });
       if (S.me && S.me.is_master && S.tab === "master") await loadMaster();
@@ -146,14 +205,16 @@
   }
 
   async function loadMaster() {
-    const [members, hist, settings, deleted, clog] = await Promise.all([
+    const other = S.day === "11/3" ? "11/4" : "11/3";
+    const [members, hist, settings, deleted, clog, otherTeams] = await Promise.all([
       api("list_members", auth()),
       api("history", { ...auth(), p_day: S.day, p_limit: 5000 }),
       api("get_settings", auth()),
       api("list_deleted_teams", { ...auth(), p_day: S.day }),
       api("list_counter_log", auth()),
+      api("list_teams", { p_day: other }),
     ]);
-    S.members = members; S.hist = hist; S.settings = settings; S.deleted = deleted; S.clog = clog;
+    S.members = members; S.hist = hist; S.settings = settings; S.deleted = deleted; S.clog = clog; S.teams[other] = otherTeams;
   }
   const canCount = () => !!(S.me && (S.me.is_counter || S.me.is_master));
 
@@ -256,23 +317,28 @@
   function teamPicker(label) {
     const teams = S.teams[S.day];
     if (!teams.length) return empty(S.day + "のチームはまだありません", "とらがチームを作るまで待ってね");
-    const cur = S.me.team_day === S.day ? S.me.team_id : null;
+    const cur = myTeam(S.day) ? myTeam(S.day).id : null;
     return `<div class="box"><h2 class="h">${label}</h2><div class="pick">${teams.map((t) =>
       `<button data-act="pick" data-id="${esc(t.id)}" aria-pressed="${t.id === cur}">${esc(t.name)}</button>`).join("")}</div></div>`;
   }
 
+  // 景品は1位だけ
   function prizesBox(b) {
-    const p = (b.prizes || []).map((x, i) => x ? `<div>${["🥇", "🥈", "🥉"][i]} ${i + 1}位：<b>${esc(x)}</b></div>` : "").join("");
-    return p ? `<div class="prizes">${p}</div>` : "";
+    const x = (b.prizes || [])[0];
+    return x ? `<div class="prizes"><div>🥇 1位のチーム：<b>${esc(x)}</b></div></div>` : "";
   }
 
   function renderRank() {
     const b = S.board;
     if (!b) return empty("読み込み中…");
-    const mine = S.me.team_day === S.day ? S.me.team_id : null;
+    const mine = myTeam(S.day) ? myTeam(S.day).id : null;
     const master = S.me.is_master;
     let h = "";
-    if (!mine && S.teams[S.day].length) h += teamPicker(S.day + "の自分のチームを選んでね");
+    if (!mine && !master && S.teams[S.day].length) {
+      h += S.me.teams && Object.keys(S.me.teams).length
+        ? `<div class="box"><h2 class="h">${esc(S.day)}はチームに入っていません</h2><p class="small">この日も手伝える人は、とらに伝えてね。</p></div>`
+        : teamPicker(S.day + "の自分のチームを選んでね");
+    }
     if (pushSupported() && !S.pushOn && Notification.permission !== "denied")
       h += `<div class="box"><h2 class="h">通知をONにしよう</h2><p class="small">30分ごとのヒントが届きます。</p><button class="go" data-act="push">通知をONにする</button></div>`;
     if (!b.teams.length) return h + empty(S.day + "のチームはまだありません", "とらがチームを作るまで待ってね");
@@ -343,7 +409,8 @@
       <div class="box rules"><h2 class="h">しくみ</h2><ul>
         <li>ランキングはチーム単位</li>
         <li>決まった時刻（基本は12:30）から順位は非公開。30分ごとに自分のチームにだけヒントが届きます（通知あり）</li>
-        <li>最後に結果発表！ 1〜3位に景品あり</li>
+        <li>最後に結果発表！ 1位のチームに景品あり</li>
+        <li>チームは日ごとにちがいます。マイページで確認できます</li>
       </ul></div>`;
   }
 
@@ -356,9 +423,9 @@
 
   function renderMe() {
     const me = S.me;
+    const t = (d) => (myTeam(d) ? `<b>${esc(myTeam(d).name)}</b>` : "なし");
     let h = `<div class="box"><h2 class="h">${esc(me.name)}${me.is_master ? '<span class="tagme">マスター</span>' : ""}${me.is_counter ? '<span class="tagme">カウント係</span>' : ""}</h2>
-      <p class="small">${esc(S.day)}のチーム：${me.team_day === S.day ? esc(me.team_name) : "未選択"}</p></div>`;
-    h += teamPicker(S.day + "のチームを変える");
+      <p>11/3：${t("11/3")}<br>11/4：${t("11/4")}</p><p class="small">チームがちがうときは、とらに伝えてね。</p></div>`;
     h += pushBox();
     if (S.showKey && !me.is_master) {
       h += `<form class="box" data-form="key" autocomplete="off"><h2 class="h">マスター合言葉</h2><input id="key-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button class="go" type="submit">送る</button></form>`;
@@ -390,7 +457,7 @@
       <p class="small">隠すとその時刻から${st.slot_minutes}分ごとにヒントが出て、通知が届きます。</p></div>`;
 
     // チーム
-    const nIn = (tid) => S.members.filter((m) => m.team_id === tid).length;
+    const nIn = (tid) => S.members.filter((m) => m.teams && m.teams[day] && m.teams[day].id === tid).length;
     h += `<div class="box"><h2 class="h">${esc(day)}のチーム（${teams.length}）</h2><ul class="list">${teams.map((t) =>
       S.pending === "d:" + t.id
         ? `<li class="confirm"><span class="what">「${esc(t.name)}」を削除しますか？<br><span class="small">メンバー${nIn(t.id)}人は未所属になり、カウントはランキングから外れます。下の「削除したチーム」からいつでも元に戻せます。</span></span><button class="btn red" data-act="del-yes" data-id="${esc(t.id)}">削除する</button><button class="btn" data-act="cancel">やめる</button></li>`
@@ -402,19 +469,36 @@
         `<li><span class="what del">${esc(t.name)}</span><span class="small">${hhmm(t.deleted_at)}削除・${t.members}人・${t.counts}カウント</span><button class="btn blue" data-act="restore" data-id="${esc(t.id)}">元に戻す</button></li>`).join("")}</ul></div>`;
     }
 
-    // メンバー
+    // メンバー（その日のチームごと）
+    const tOrder = (m) => { const x = m.teams && m.teams[day]; const i = x ? teams.findIndex((tt) => tt.id === x.id) : -1; return i < 0 ? 99 : i; };
+    const mem = S.members.slice().sort((a, b) => tOrder(a) - tOrder(b));
     const opts = (m) => {
-      const inDay = m.team_day === day;
-      let o = `<option value="">${inDay || !m.team_id ? "—（未所属）" : "—"}</option>`;
-      if (m.team_id && !inDay) o = `<option value="" selected>${esc(m.team_day)}：${esc(m.team_name)}</option>` + `<option value="">—（未所属）</option>`;
-      return o + teams.map((t) => `<option value="${esc(t.id)}"${inDay && t.id === m.team_id ? " selected" : ""}>${esc(t.name)}</option>`).join("");
+      const cur = m.teams && m.teams[day] ? m.teams[day].id : "";
+      return `<option value=""${cur ? "" : " selected"}>—（${esc(day)}はなし）</option>` +
+        teams.map((tt) => `<option value="${esc(tt.id)}"${tt.id === cur ? " selected" : ""}>${esc(tt.name)}</option>`).join("");
     };
-    h += `<div class="box"><h2 class="h">メンバー（${S.members.length}人）</h2><p class="small">チームを選ぶとすぐ移動します。「係にする」でその人の端末にカウント権限が付きます。</p><ul class="mlist">${S.members.map((m) =>
-      `<li><div class="mtop"><span class="mname">${esc(m.name)}</span>${m.is_counter ? '<span class="chip on">係</span>' : ""}${m.push ? '<span class="chip">通知ON</span>' : '<span class="chip off">通知OFF</span>'}</div>
-        <div class="mbot"><select data-act="move" data-id="${esc(m.id)}">${opts(m)}</select>
-        ${m.is_counter ? "" : S.pending === "c:" + m.id
-          ? `<button class="btn red" data-act="counter-yes" data-id="${esc(m.id)}">本当に？</button><button class="btn" data-act="cancel">やめる</button>`
-          : `<button class="btn" data-act="counter" data-id="${esc(m.id)}">係にする</button>`}</div></li>`).join("")}</ul></div>`;
+    const other = day === "11/3" ? "11/4" : "11/3";
+    const otherName = (m) => (m.teams && m.teams[other] ? esc(m.teams[other].name) : "なし");
+    const mBtns = (m) => {
+      if (S.pending === "c:" + m.id) return `<button class="btn red" data-act="counter-yes" data-id="${esc(m.id)}">係にする？</button><button class="btn" data-act="cancel">やめる</button>`;
+      if (S.pending === "r:" + m.id) return `<button class="btn red" data-act="release-yes" data-id="${esc(m.id)}">端末を外す？</button><button class="btn" data-act="cancel">やめる</button>`;
+      if (S.pending === "h:" + m.id) return `<button class="btn red" data-act="hide-yes" data-id="${esc(m.id)}">一覧から消す？</button><button class="btn" data-act="cancel">やめる</button>`;
+      let b = "";
+      if (m.claimed && !m.is_counter) b += `<button class="btn" data-act="counter" data-id="${esc(m.id)}">係にする</button>`;
+      if (m.claimed && !m.is_master) b += `<button class="btn" data-act="release" data-id="${esc(m.id)}">端末を外す</button>`;
+      if (!m.is_master) b += `<button class="btn" data-act="hide" data-id="${esc(m.id)}">消す</button>`;
+      return b;
+    };
+    h += `<div class="box"><h2 class="h">メンバー（${S.members.length}人）</h2><p class="small">${esc(day)}のチームを選ぶとすぐ移動します。「端末を外す」は、違う人が名前を選んでしまったとき用（本人が選び直せます）。</p><ul class="mlist">${mem.map((m) =>
+      `<li><div class="mtop"><span class="mname">${esc(m.name)}</span>${m.is_counter ? '<span class="chip on">係</span>' : ""}${m.claimed ? '<span class="chip">登録済み</span>' : '<span class="chip off">未登録</span>'}${m.push ? '<span class="chip">通知ON</span>' : ""}</div>
+        <div class="mbot"><select data-act="move" data-id="${esc(m.id)}">${opts(m)}</select>${mBtns(m)}</div>
+        <span class="small">${esc(other)}：${otherName(m)}</span></li>`).join("")}</ul></div>`;
+
+    // メンバー追加（当日の飛び入り）
+    const sel = (d, id) => `<select id="${id}"><option value="">${esc(d)}：なし</option>${(S.teams[d] || []).map((tt) => `<option value="${esc(tt.id)}">${esc(d)}：${esc(tt.name)}</option>`).join("")}</select>`;
+    h += `<form class="box" data-form="member" autocomplete="off"><h2 class="h">メンバーを追加</h2>
+      <input id="mem-new" placeholder="フルネーム">${sel("11/3", "mem-t3")}${sel("11/4", "mem-t4")}
+      <button class="btn blue" type="submit">追加</button><p class="small">追加した人は、最初の画面で自分の名前を選べば参加できます。</p></form>`;
 
     // 時間帯別
     const live = S.hist.filter((c) => !c.deleted);
@@ -433,8 +517,8 @@
 
     // 景品
     const pz = st.prizes || ["", "", ""];
-    h += `<form class="box" data-form="prizes" autocomplete="off"><h2 class="h">景品</h2>${[0, 1, 2].map((i) =>
-      `<label>${i + 1}位<input id="pz-${i}" value="${esc(pz[i] || "")}" placeholder="${["例：ギフトカード1,000円", "例：カップ麺", "例：ジュース"][i]}"></label>`).join("")}<button class="go" type="submit">保存</button></form>`;
+    h += `<form class="box" data-form="prizes" autocomplete="off"><h2 class="h">景品（1位のチームだけ）</h2>
+      <label>1位<input id="pz-0" value="${esc(pz[0] || "")}" placeholder="例：ギフトカード1,000円×人数"></label><button class="go" type="submit">保存</button></form>`;
 
     // 結果発表
     const rev = (st.revealed || []).includes(day);
@@ -469,6 +553,10 @@
       case "rename": { const v = $("rn-" + id).value.trim().slice(0, 20); if (v) masterDo("rename_team", { p_team: id, p_name: v }, "名前を変えました"); break; }
       case "counter": S.pending = "c:" + id; renderAll(); break;
       case "counter-yes": masterDo("set_counter", { p_member: id }, "カウント係を指名しました").then(() => notify({ type: "counter" })); break;
+      case "release": S.pending = "r:" + id; renderAll(); break;
+      case "release-yes": masterDo("release_member", { p_member: id }, "端末を外しました（本人が選び直せます）"); break;
+      case "hide": S.pending = "h:" + id; renderAll(); break;
+      case "hide-yes": masterDo("hide_member", { p_member: id }, "一覧から消しました"); break;
       case "cancel": S.pending = null; renderAll(); break;
       case "reveal": S.pending = "reveal"; renderAll(); break;
       case "reveal-yes": masterDo("set_reveal", { p_day: S.day, p_on: true }, "結果発表しました！"); break;
@@ -484,8 +572,7 @@
   });
   document.addEventListener("change", (e) => {
     const s = e.target.closest('select[data-act="move"]');
-    if (s && s.value) masterDo("move_member", { p_member: s.dataset.id, p_team: s.value }, "移動しました");
-    else if (s) masterDo("move_member", { p_member: s.dataset.id, p_team: null }, "未所属にしました");
+    if (s) masterDo("move_member_day", { p_member: s.dataset.id, p_day: S.day, p_team: s.value || null }, s.value ? "移動しました" : S.day + "はチームなしにしました");
   });
   document.addEventListener("submit", async (e) => {
     const f = e.target.closest("[data-form]"); if (!f) return;
@@ -495,7 +582,10 @@
       $("team-new").blur(); await masterDo("add_team", { p_day: S.day, p_name: v }, v + " を追加しました");
     } else if (f.dataset.form === "prizes") {
       document.activeElement.blur();
-      await masterDo("set_prizes", { p_prizes: [0, 1, 2].map((i) => $("pz-" + i).value.trim().slice(0, 30)) }, "景品を保存しました");
+      await masterDo("set_prizes", { p_prizes: [$("pz-0").value.trim().slice(0, 30), "", ""] }, "景品を保存しました");
+    } else if (f.dataset.form === "member") {
+      const v = $("mem-new").value.trim().slice(0, 20); if (!v) return;
+      await masterDo("add_member", { p_name: v, p_team3: $("mem-t3").value || null, p_team4: $("mem-t4").value || null }, v + " を追加しました");
     } else if (f.dataset.form === "key") {
       try {
         const ok = await api("claim_master", { ...auth(), p_key: $("key-input").value });
@@ -512,6 +602,6 @@
   // ---------- 開始 ----------
   if (!CFG.SUPABASE_URL || /xxxx/.test(CFG.SUPABASE_URL)) { status("config.js にSupabaseのURLとキーを入れてください。"); return; }
   if (!standalone && !webOK) initInstall();
-  else if (!S.id || !S.secret) show("s-register");
+  else if (!S.id || !S.secret) initRegister();
   else start();
 })();

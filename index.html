@@ -219,14 +219,15 @@ nav button[aria-pressed="true"]{background:var(--ink);color:var(--y)}
     </div>
   </section>
 
-  <!-- ② はじめての登録 -->
+  <!-- ② はじめての登録：自分の名前を選ぶ -->
   <section class="screen" id="s-register" hidden>
-    <form class="box" id="reg-form" autocomplete="off">
-      <h2 class="h">はじめまして！</h2>
+    <div id="reg-pick" style="display:grid;gap:12px"></div>
+    <form class="box" id="reg-form" autocomplete="off" hidden>
+      <h2 class="h">リストに名前がない人</h2>
       <label for="reg-name">名前（フルネームで）
         <input id="reg-name" placeholder="例：立教 太郎" autocomplete="name" required>
       </label>
-      <p class="small">誰かわかるように、フルネームで登録してください。チームは次の画面で選びます。</p>
+      <p class="small">登録したら、とらにチームを入れてもらってね。</p>
       <button class="go" type="submit">はじめる</button>
     </form>
   </section>
@@ -251,6 +252,6 @@ nav button[aria-pressed="true"]{background:var(--ink);color:var(--y)}
 <div class="toast" id="toast" hidden><span id="toast-text"></span><button id="toast-undo" type="button">取り消し</button></div>
 
 <script src="config.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

@@ -17,8 +17,12 @@
 - ルール：メンバー本人が係に申告。お客さんに伝言させない。お客さんへの確認はしない（信用ゲーム）
 - カウント係（`config.counter_id`）とマスターだけが押せる（`_is_counter`）。指名の履歴は `counter_log`
 - チーム削除は論理削除（`teams.deleted_at`）。`restore_team` で戻せる。削除中のチームは全集計から除外
-- 既存DBの更新は `supabase/migration_v2.sql` のように、alter ＋ 関数の再定義だけのファイルを作って流す（schema.sql を丸ごと流すと合言葉が上書きされる）。v2→v3 は `migration_v3.sql`、v3→v4 は `migration_v4.sql`
+- 既存DBの更新は `supabase/migration_v2.sql` のように、alter ＋ 関数の再定義だけのファイルを作って流す（schema.sql を丸ごと流すと合言葉が上書きされる）。v2→v3 は `migration_v3.sql`、v3→v4 は `migration_v4.sql`、v4→v5 は `migration_v5.sql`
 - `_` で始まる関数は内部用。anonにgrantしない。Edge Function（service_role）からは呼べる
+
+- チームは日ごと（v5）。`member_teams(member_id, day, team_id)`。`_team_of(member, day)` で引く。`members.team_id` は v4までの名残で未使用
+- メンバーは先に名前だけ登録（`secret_hash` が null）。最初の画面で名前を選ぶと `claim_member` で端末と結びつく。マスターは `move_member_day` / `add_member` / `release_member`（端末を外す）/ `hide_member`
+- 景品は1位のチームだけ（`config.prizes[1]` だけ使う）
 
 ## 時刻
 - 判定は全部DB側の `now()`。非公開開始は `_hide_at(day)` = `force_at`（旧リハーサル）→ `manual_hide[day]`（マスターの「今すぐ隠す」）→ `hide_times[day]`（日ごとの時刻、初期12:30）の順
